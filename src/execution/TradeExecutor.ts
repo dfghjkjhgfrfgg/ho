@@ -1,364 +1,322 @@
-import { ethers } from 'ethers';
-import BigNumber from 'bignumber.js';
+import { KalshiClient } from '../api/KalshiClient';
 import {
-  ArbitrageOpportunity,
-  TradeExecutionResult,
-  BotConfig
-} from '../contracts/types';
-import { KASHI_PAIR_ABI, ERC20_ABI } from '../contracts/KashiPairABI';
-import { MarketDataFetcher } from '../data/MarketDataFetcher';
+  TradingOpportunity,
+  TradeResult,
+  KalshiOrder,
+  KalshiConfig,
+} from '../types/KalshiTypes';
+import { Logger } from '../utils/Logger';
 
 /**
- * Executes arbitrage trades on Kashi markets
+ * Executes trades on Kalshi
+ * Handles order placement, monitoring, and execution
  */
 export class TradeExecutor {
-  private wallet: ethers.Wallet;
-  private config: BotConfig;
-  private dataFetcher: MarketDataFetcher;
+  private client: KalshiClient;
+  private logger = Logger.getInstance();
+  private config: KalshiConfig;
+  private pendingOrders: Map<string, KalshiOrder> = new Map();
 
-  constructor(
-    wallet: ethers.Wallet,
-    config: BotConfig,
-    dataFetcher: MarketDataFetcher
-  ) {
-    this.wallet = wallet;
+  constructor(client: KalshiClient, config: KalshiConfig) {
+    this.client = client;
     this.config = config;
-    this.dataFetcher = dataFetcher;
   }
 
   /**
-   * Execute an arbitrage opportunity
+   * Execute a trading opportunity
    */
-  async execute(
-    opportunity: ArbitrageOpportunity
-  ): Promise<TradeExecutionResult> {
-    const startTime = Date.now();
+  async executeTrade(opportunity: TradingOpportunity): Promise<TradeResult> {
+    const { ticker, side, action, currentPrice, recommendedSize } = opportunity;
+
+    this.logger.info(`Executing trade: ${action} ${recommendedSize} contracts of ${ticker} ${side} @ ${currentPrice}¢`);
+
+    // Dry run mode - simulate only
+    if (this.config.dryRun) {
+      return this.simulateTrade(opportunity);
+    }
 
     try {
-      // If dry run, just simulate
-      if (this.config.dryRun) {
-        return this.simulateExecution(opportunity);
-      }
+      // Place limit order at current ask/bid price
+      const price = action === 'buy' ? currentPrice : currentPrice;
 
-      // Pre-execution validations
-      const validationResult = await this.validateExecution(opportunity);
-      if (!validationResult.valid) {
-        return {
-          success: false,
-          error: `Validation failed: ${validationResult.reason}`,
-          opportunity,
-          timestamp: Date.now()
-        };
-      }
+      const order = await this.client.placeOrder({
+        ticker,
+        action,
+        side,
+        count: recommendedSize,
+        type: 'limit',
+        yes_price: side === 'yes' ? price : undefined,
+        no_price: side === 'no' ? price : undefined,
+      });
 
-      // Execute the arbitrage strategy:
-      // 1. Supply to the high-yield market
-      // 2. Borrow from the low-rate market
-      // 3. Monitor and manage position
+      this.pendingOrders.set(order.order_id, order);
 
-      // Step 1: Approve tokens if needed
-      await this.ensureApprovals(opportunity);
+      this.logger.info(`Order placed successfully: ${order.order_id}`);
 
-      // Step 2: Supply asset to supply market
-      const supplyTx = await this.supplyAsset(
-        opportunity.supplyMarket.pairAddress,
-        opportunity.optimalAmount
-      );
+      // Monitor order for a short time to see if it fills
+      const filledOrder = await this.monitorOrder(order.order_id, 5000); // 5 seconds
 
-      // Step 3: Borrow asset from borrow market
-      const borrowTx = await this.borrowAsset(
-        opportunity.borrowMarket.pairAddress,
-        opportunity.optimalAmount
-      );
-
-      // Calculate actual profit (simplified - would need to track over time)
-      const actualProfit = opportunity.expectedNetProfit;
+      const totalCost = (filledOrder ? recommendedSize : 0) * price;
 
       return {
-        success: true,
-        transactionHash: borrowTx.hash,
-        opportunity,
-        actualProfit,
-        gasUsed: new BigNumber(
-          (await supplyTx.wait())?.gasUsed?.toString() || '0'
-        ),
-        timestamp: Date.now()
+        success: filledOrder !== null,
+        orderId: order.order_id,
+        ticker,
+        side,
+        action,
+        contracts: recommendedSize,
+        price,
+        totalCost,
+        timestamp: new Date().toISOString(),
       };
-    } catch (error) {
+    } catch (error: any) {
+      this.logger.error(`Trade execution failed: ${error.message}`);
+
       return {
         success: false,
-        error: `Execution failed: ${error}`,
-        opportunity,
-        timestamp: Date.now()
+        ticker,
+        side,
+        action,
+        contracts: 0,
+        price: currentPrice,
+        totalCost: 0,
+        error: error.message,
+        timestamp: new Date().toISOString(),
       };
     }
   }
 
   /**
-   * Validate that the opportunity is still valid before execution
+   * Simulate a trade (dry run mode)
    */
-  private async validateExecution(
-    opportunity: ArbitrageOpportunity
-  ): Promise<{ valid: boolean; reason?: string }> {
-    // Re-fetch current market data to ensure opportunity still exists
-    const [currentSupplyMarket, currentBorrowMarket] = await Promise.all([
-      this.dataFetcher.fetchMarketData(opportunity.supplyMarket.pairAddress),
-      this.dataFetcher.fetchMarketData(opportunity.borrowMarket.pairAddress)
-    ]);
+  private simulateTrade(opportunity: TradingOpportunity): TradeResult {
+    const { ticker, side, action, currentPrice, recommendedSize } = opportunity;
 
-    // Check if spread is still favorable
-    const currentSpread = currentSupplyMarket.supplyAPY.minus(
-      currentBorrowMarket.borrowAPY
-    );
-    const originalSpread = opportunity.spreadPercent.div(100);
+    const totalCost = recommendedSize * currentPrice / 100;
 
-    if (currentSpread.lt(originalSpread.times(0.8))) {
-      // Spread decreased by more than 20%
-      return {
-        valid: false,
-        reason: 'Spread decreased significantly since detection'
-      };
-    }
+    this.logger.info(`[DRY RUN] Would ${action} ${recommendedSize} contracts of ${ticker} ${side} @ ${currentPrice}¢`);
+    this.logger.info(`[DRY RUN] Total cost: $${totalCost.toFixed(2)}`);
+    this.logger.info(`[DRY RUN] Expected value: ${(opportunity.expectedValue * 100).toFixed(1)}%`);
 
-    // Check if sufficient liquidity is available
-    if (
-      currentSupplyMarket.availableLiquidity.lt(opportunity.optimalAmount) ||
-      currentBorrowMarket.availableLiquidity.lt(opportunity.optimalAmount)
-    ) {
-      return {
-        valid: false,
-        reason: 'Insufficient liquidity available'
-      };
-    }
-
-    // Check wallet balance
-    const assetBalance = await this.dataFetcher.getTokenBalance(
-      opportunity.supplyMarket.asset,
-      this.wallet.address
-    );
-
-    if (assetBalance.lt(opportunity.optimalAmount)) {
-      return {
-        valid: false,
-        reason: `Insufficient balance. Need ${opportunity.optimalAmount.toString()}, have ${assetBalance.toString()}`
-      };
-    }
-
-    // Check gas price
-    const currentGasPrice = await this.dataFetcher.getCurrentGasPrice();
-    const maxGasPrice = new BigNumber(this.config.gasPriceLimitGwei).times(
-      new BigNumber(10).pow(9)
-    );
-
-    if (currentGasPrice.gt(maxGasPrice)) {
-      return {
-        valid: false,
-        reason: `Gas price too high: ${currentGasPrice
-          .div(new BigNumber(10).pow(9))
-          .toString()} gwei`
-      };
-    }
-
-    return { valid: true };
-  }
-
-  /**
-   * Ensure token approvals are in place
-   */
-  private async ensureApprovals(
-    opportunity: ArbitrageOpportunity
-  ): Promise<void> {
-    const assetAddress = opportunity.supplyMarket.asset;
-    const supplyPairAddress = opportunity.supplyMarket.pairAddress;
-    const borrowPairAddress = opportunity.borrowMarket.pairAddress;
-
-    // Check and approve for supply market
-    const needsSupplyApproval = await this.dataFetcher.needsApproval(
-      assetAddress,
-      this.wallet.address,
-      supplyPairAddress,
-      opportunity.optimalAmount
-    );
-
-    if (needsSupplyApproval) {
-      await this.approveToken(
-        assetAddress,
-        supplyPairAddress,
-        opportunity.optimalAmount
-      );
-    }
-
-    // Check and approve for borrow market (for repayment)
-    const needsBorrowApproval = await this.dataFetcher.needsApproval(
-      assetAddress,
-      this.wallet.address,
-      borrowPairAddress,
-      opportunity.optimalAmount
-    );
-
-    if (needsBorrowApproval) {
-      await this.approveToken(
-        assetAddress,
-        borrowPairAddress,
-        opportunity.optimalAmount
-      );
-    }
-  }
-
-  /**
-   * Approve token spending
-   */
-  private async approveToken(
-    tokenAddress: string,
-    spenderAddress: string,
-    amount: BigNumber
-  ): Promise<void> {
-    const tokenContract = new ethers.Contract(
-      tokenAddress,
-      ERC20_ABI,
-      this.wallet
-    );
-
-    // Approve max uint256 for convenience (standard practice)
-    const maxUint256 = ethers.MaxUint256;
-
-    const tx = await tokenContract.approve(spenderAddress, maxUint256);
-    await tx.wait();
-  }
-
-  /**
-   * Supply asset to a Kashi pair
-   */
-  private async supplyAsset(
-    pairAddress: string,
-    amount: BigNumber
-  ): Promise<ethers.ContractTransactionResponse> {
-    const pairContract = new ethers.Contract(
-      pairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
-
-    // addAsset(fraction, to)
-    // fraction: amount to add (in shares, but we use amount for simplicity)
-    // to: recipient address
-    const tx = await pairContract.addAsset(
-      amount.toFixed(0),
-      this.wallet.address
-    );
-
-    return tx;
-  }
-
-  /**
-   * Borrow asset from a Kashi pair
-   */
-  private async borrowAsset(
-    pairAddress: string,
-    amount: BigNumber
-  ): Promise<ethers.ContractTransactionResponse> {
-    const pairContract = new ethers.Contract(
-      pairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
-
-    // borrow(to, amount)
-    const tx = await pairContract.borrow(
-      this.wallet.address,
-      amount.toFixed(0)
-    );
-
-    return tx;
-  }
-
-  /**
-   * Repay borrowed asset
-   */
-  async repayBorrow(
-    pairAddress: string,
-    amount: BigNumber
-  ): Promise<ethers.ContractTransactionResponse> {
-    const pairContract = new ethers.Contract(
-      pairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
-
-    const tx = await pairContract.repay(this.wallet.address, amount.toFixed(0));
-
-    return tx;
-  }
-
-  /**
-   * Remove supplied asset
-   */
-  async removeAsset(
-    pairAddress: string,
-    amount: BigNumber
-  ): Promise<ethers.ContractTransactionResponse> {
-    const pairContract = new ethers.Contract(
-      pairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
-
-    const tx = await pairContract.removeAsset(
-      amount.toFixed(0),
-      this.wallet.address
-    );
-
-    return tx;
-  }
-
-  /**
-   * Simulate execution without actually sending transactions
-   */
-  private simulateExecution(
-    opportunity: ArbitrageOpportunity
-  ): TradeExecutionResult {
     return {
       success: true,
-      transactionHash: '0x' + '0'.repeat(64), // Dummy hash
-      opportunity,
-      actualProfit: opportunity.expectedNetProfit,
-      gasUsed: new BigNumber(300000),
-      timestamp: Date.now()
+      orderId: `DRY_RUN_${Date.now()}`,
+      ticker,
+      side,
+      action,
+      contracts: recommendedSize,
+      price: currentPrice,
+      totalCost: totalCost * 100, // Convert to cents
+      timestamp: new Date().toISOString(),
     };
   }
 
   /**
-   * Emergency function to close all positions
+   * Monitor an order to see if it gets filled
    */
-  async closeAllPositions(
-    supplyPairAddress: string,
-    borrowPairAddress: string
-  ): Promise<void> {
-    // Get current positions
-    const supplyPairContract = new ethers.Contract(
-      supplyPairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
+  private async monitorOrder(
+    orderId: string,
+    timeoutMs: number
+  ): Promise<KalshiOrder | null> {
+    const startTime = Date.now();
 
-    const borrowPairContract = new ethers.Contract(
-      borrowPairAddress,
-      KASHI_PAIR_ABI,
-      this.wallet
-    );
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const orders = await this.client.getOrders({});
 
-    // Repay all borrows first
-    const borrowBalance = await borrowPairContract.userBorrowPart(
-      this.wallet.address
-    );
-    if (borrowBalance > 0) {
-      await this.repayBorrow(borrowPairAddress, new BigNumber(borrowBalance.toString()));
+        const order = orders.orders.find((o) => o.order_id === orderId);
+
+        if (!order) {
+          this.logger.warn(`Order ${orderId} not found`);
+          return null;
+        }
+
+        if (order.status === 'executed') {
+          this.logger.info(`Order ${orderId} filled!`);
+          this.pendingOrders.delete(orderId);
+          return order;
+        }
+
+        if (order.status === 'canceled') {
+          this.logger.warn(`Order ${orderId} was canceled`);
+          this.pendingOrders.delete(orderId);
+          return null;
+        }
+
+        // Still pending, wait a bit
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } catch (error: any) {
+        this.logger.error(`Error monitoring order: ${error.message}`);
+        return null;
+      }
     }
 
-    // Remove all supplied assets
-    const supplyBalance = await supplyPairContract.balanceOf(this.wallet.address);
-    if (supplyBalance > 0) {
-      await this.removeAsset(supplyPairAddress, new BigNumber(supplyBalance.toString()));
+    this.logger.info(`Order ${orderId} timeout - still pending`);
+    return null;
+  }
+
+  /**
+   * Cancel a pending order
+   */
+  async cancelOrder(orderId: string): Promise<boolean> {
+    try {
+      await this.client.cancelOrder(orderId);
+      this.pendingOrders.delete(orderId);
+      this.logger.info(`Order ${orderId} canceled`);
+      return true;
+    } catch (error: any) {
+      this.logger.error(`Failed to cancel order ${orderId}: ${error.message}`);
+      return false;
     }
+  }
+
+  /**
+   * Cancel all pending orders
+   */
+  async cancelAllOrders(): Promise<void> {
+    this.logger.info(`Canceling ${this.pendingOrders.size} pending orders...`);
+
+    const cancelPromises = Array.from(this.pendingOrders.keys()).map((orderId) =>
+      this.cancelOrder(orderId)
+    );
+
+    await Promise.all(cancelPromises);
+  }
+
+  /**
+   * Get pending orders
+   */
+  getPendingOrders(): KalshiOrder[] {
+    return Array.from(this.pendingOrders.values());
+  }
+
+  /**
+   * Execute exit strategy for a position
+   */
+  async exitPosition(
+    ticker: string,
+    side: 'yes' | 'no',
+    contracts: number,
+    currentBidPrice: number
+  ): Promise<TradeResult> {
+    this.logger.info(`Exiting position: Sell ${contracts} contracts of ${ticker} ${side} @ ${currentBidPrice}¢`);
+
+    if (this.config.dryRun) {
+      const totalProceeds = contracts * currentBidPrice / 100;
+      this.logger.info(`[DRY RUN] Would sell ${contracts} contracts for $${totalProceeds.toFixed(2)}`);
+
+      return {
+        success: true,
+        orderId: `DRY_RUN_EXIT_${Date.now()}`,
+        ticker,
+        side,
+        action: 'sell',
+        contracts,
+        price: currentBidPrice,
+        totalCost: totalProceeds * 100, // Convert to cents
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    try {
+      const order = await this.client.placeOrder({
+        ticker,
+        action: 'sell',
+        side,
+        count: contracts,
+        type: 'limit',
+        yes_price: side === 'yes' ? currentBidPrice : undefined,
+        no_price: side === 'no' ? currentBidPrice : undefined,
+      });
+
+      this.logger.info(`Exit order placed: ${order.order_id}`);
+
+      const totalProceeds = contracts * currentBidPrice;
+
+      return {
+        success: true,
+        orderId: order.order_id,
+        ticker,
+        side,
+        action: 'sell',
+        contracts,
+        price: currentBidPrice,
+        totalCost: totalProceeds,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      this.logger.error(`Exit failed: ${error.message}`);
+
+      return {
+        success: false,
+        ticker,
+        side,
+        action: 'sell',
+        contracts: 0,
+        price: currentBidPrice,
+        totalCost: 0,
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  /**
+   * Execute arbitrage trade (buy both YES and NO)
+   */
+  async executeArbitrage(
+    ticker: string,
+    yesContracts: number,
+    noContracts: number,
+    yesPrice: number,
+    noPrice: number
+  ): Promise<{ yesResult: TradeResult; noResult: TradeResult }> {
+    this.logger.info(`EXECUTING ARBITRAGE on ${ticker}:`);
+    this.logger.info(`  YES: ${yesContracts} contracts @ ${yesPrice}¢`);
+    this.logger.info(`  NO: ${noContracts} contracts @ ${noPrice}¢`);
+    this.logger.info(`  Profit: ${100 - yesPrice - noPrice}¢ per pair`);
+
+    const yesOpportunity: TradingOpportunity = {
+      ticker,
+      title: 'Arbitrage YES',
+      side: 'yes',
+      action: 'buy',
+      currentPrice: yesPrice,
+      fairValue: 0,
+      edge: 0,
+      expectedValue: 0,
+      kellyFraction: 0,
+      recommendedSize: yesContracts,
+      maxSize: yesContracts,
+      reasoning: 'Arbitrage opportunity',
+      confidence: 1,
+      category: 'arbitrage',
+      expirationTime: '',
+    };
+
+    const noOpportunity: TradingOpportunity = {
+      ticker,
+      title: 'Arbitrage NO',
+      side: 'no',
+      action: 'buy',
+      currentPrice: noPrice,
+      fairValue: 0,
+      edge: 0,
+      expectedValue: 0,
+      kellyFraction: 0,
+      recommendedSize: noContracts,
+      maxSize: noContracts,
+      reasoning: 'Arbitrage opportunity',
+      confidence: 1,
+      category: 'arbitrage',
+      expirationTime: '',
+    };
+
+    const [yesResult, noResult] = await Promise.all([
+      this.executeTrade(yesOpportunity),
+      this.executeTrade(noOpportunity),
+    ]);
+
+    return { yesResult, noResult };
   }
 }

@@ -1,9 +1,9 @@
-import { KashiArbitrageBot } from './bot/KashiArbitrageBot';
+import { KalshiTradingBot } from './bot/KalshiTradingBot';
 import { Config } from './utils/Config';
 import { Logger } from './utils/Logger';
 
 /**
- * Main entry point for the Kashi Arbitrage Trading Bot
+ * Main entry point for the Kalshi Trading Bot
  */
 async function main() {
   // Ensure logs directory exists
@@ -19,7 +19,7 @@ async function main() {
   }
 
   // Create and start bot
-  const bot = new KashiArbitrageBot(config);
+  const bot = new KalshiTradingBot(config);
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
@@ -50,10 +50,15 @@ async function main() {
   // Start the bot
   try {
     console.log('='.repeat(60));
-    console.log('KASHI ARBITRAGE TRADING BOT');
-    console.log('Mathematics-Based Trading - No Hope, Only Math');
+    console.log('KALSHI PREDICTION MARKET TRADING BOT');
+    console.log('Mathematical Trading - Buy Low, Sell High');
     console.log('='.repeat(60));
     console.log('');
+
+    if (config.dryRun) {
+      console.log('🔶 DRY RUN MODE - No real trades will be executed');
+      console.log('');
+    }
 
     await bot.start();
   } catch (error) {

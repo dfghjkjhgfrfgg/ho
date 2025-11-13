@@ -1,80 +1,94 @@
-# Kashi Arbitrage Trading Bot
+# Kalshi Game Contract Trading Bot
 
-**Mathematics-Based Trading - No Hope, Only Math**
+**Mathematical Prediction Market Trading - Buy Low, Sell High**
 
-A sophisticated arbitrage trading bot for Kashi lending markets that identifies and executes profitable opportunities using mathematical analysis rather than speculation.
+A sophisticated trading bot for Kalshi prediction markets that uses mathematical analysis, game theory, and value betting principles to identify and execute profitable trades on sports and game contracts.
 
 ## Overview
 
-This bot continuously monitors Kashi lending pairs to find arbitrage opportunities by analyzing interest rate differentials. It uses pure mathematical calculations to:
-
-- Calculate real-time supply and borrow APYs
-- Detect profitable rate spreads between markets
-- Compute optimal position sizes
-- Estimate costs (gas, slippage)
-- Assess risk factors
-- Execute trades when profitable
+This bot continuously monitors Kalshi prediction markets to find mispriced contracts using:
+- **Mathematical pricing models** - Implied probabilities, expected value calculations
+- **Kelly Criterion** - Optimal position sizing based on edge and bankroll
+- **Value betting** - Identifying contracts where market price differs from fair value
+- **Risk management** - Portfolio limits, exposure controls, and automatic exits
+- **Game data analysis** - Sports-specific models and statistical analysis
 
 ## How It Works
 
-### The Math Behind Arbitrage
+### The Math Behind Prediction Markets
 
-The bot identifies opportunities where:
+The bot identifies opportunities where the market price doesn't reflect the true probability:
 
 ```
-Profit = (SupplyAPY_MarketA - BorrowAPY_MarketB) × Amount × Time - Costs
+Edge = Fair Probability - Implied Probability (from price)
+Expected Value = (Win Probability × Profit) - (Loss Probability × Loss)
+Kelly Fraction = (Edge × Odds) / Odds
+Position Size = Bankroll × Kelly Fraction × Safety Factor
 ```
 
 **Strategy:**
-1. Find two Kashi markets for the same asset
-2. Supply to Market A (high supply APY)
-3. Borrow from Market B (low borrow APY)
-4. Profit from the interest rate differential
+1. Scan Kalshi markets for sports/game contracts
+2. Calculate fair value using multiple pricing models
+3. Identify contracts with positive edge (> 5%)
+4. Size positions using fractional Kelly Criterion
+5. Execute trades when risk/reward is favorable
+6. Manage positions and take profits/cut losses
 
 **Key Formulas:**
-- **Utilization Rate**: `totalBorrow / totalAsset`
-- **Supply APY**: `borrowAPY × utilization × (1 - protocolFee)`
-- **Borrow APY**: `interestPerSecond × secondsPerYear`
-- **Net Profit**: `grossProfit - gasCost - slippage`
+- **Implied Probability**: `price / 100` (Kalshi prices are 0-100 cents)
+- **Expected Value**: `(win_prob × payout) - (loss_prob × cost) / cost`
+- **Edge**: `fair_probability - market_probability`
+- **Kelly Sizing**: `(bp - q) / b` where b = net odds, p = win prob, q = loss prob
 
 ## Features
 
 ### Core Functionality
-- Real-time market data fetching from multiple Kashi pairs
-- Mathematical opportunity detection (no speculation)
-- Automatic trade execution
-- Position monitoring and management
-- Risk assessment and safety checks
+- Real-time market monitoring via Kalshi API
+- Multi-model fair value calculation
+- Automated opportunity detection and execution
+- Position tracking and management
+- Portfolio risk management
+- Arbitrage detection (rare but risk-free when YES + NO < 100)
+
+### Mathematical Models
+- **Market efficiency model** - Uses current prices as baseline
+- **Volume-weighted model** - Higher volume = more efficient pricing
+- **Spread adjustment** - Wide spreads indicate uncertainty
+- **Time decay** - Markets near expiration are more efficient
+- **Sports-specific models** - Home field advantage, favorite/underdog bias
+- **Weighted ensemble** - Combines models for final fair value
 
 ### Risk Management
-- Utilization limits (max 95%)
-- Position concentration limits (max 20% of market)
-- Liquidation risk monitoring (max 15%)
-- Health factor tracking
-- Gas price limits
-- Minimum profit thresholds
+- Kelly Criterion position sizing with fractional Kelly for safety
+- Maximum position size limits (per trade)
+- Maximum total exposure limits (across portfolio)
+- Category concentration limits (max 50% in one category)
+- Confidence-based sizing adjustments
+- Time-to-expiration adjustments
+- Automatic profit taking and loss cutting
 
 ### Safety Features
-- Dry-run mode for testing
-- Pre-execution validation
+- Dry-run mode for paper trading
+- Pre-trade risk validation
 - Emergency stop functionality
 - Comprehensive logging
+- Portfolio health monitoring
 - Error handling and recovery
 
 ## Installation
 
 ### Prerequisites
 - Node.js v18 or higher
-- An Ethereum RPC endpoint (Alchemy, Infura, etc.)
-- Wallet with private key (for live trading)
-- ETH for gas fees
+- Kalshi account (sign up at https://kalshi.com)
+- API credentials from Kalshi
+- Funds in your Kalshi account (for live trading)
 
 ### Setup
 
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd kashi-arbitrage-bot
+cd kalshi-game-trading-bot
 ```
 
 2. Install dependencies:
@@ -89,49 +103,33 @@ cp .env.example .env
 
 4. Edit `.env` with your settings:
 ```bash
-# RPC Configuration
-RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
-CHAIN_ID=1
+# Kalshi API Configuration
+KALSHI_EMAIL=your.email@example.com
+KALSHI_PASSWORD=your_password_here
+KALSHI_API_URL=https://demo.kalshi.com/trade-api/v2
 
-# Wallet Configuration (KEEP PRIVATE!)
-PRIVATE_KEY=your_private_key_here
+# Trading Parameters
+MIN_EDGE=0.05                    # Minimum 5% edge required
+MAX_POSITION_SIZE=100            # Max $100 per position
+MAX_TOTAL_EXPOSURE=500           # Max $500 total exposure
+KELLY_FRACTION=0.25              # Quarter Kelly for safety
 
-# Bot Configuration
-MIN_PROFIT_USD=50
-MIN_PROFIT_PERCENTAGE=0.5
-MAX_POSITION_SIZE_ETH=10
-GAS_PRICE_LIMIT_GWEI=100
-
-# Kashi Markets to Monitor
-KASHI_MARKETS=USDC-WETH,DAI-WETH,USDT-WETH
+# Market Categories
+CATEGORIES=sports,nfl,nba,mlb
 
 # Execution
-DRY_RUN=true
-EXECUTION_INTERVAL_MS=5000
-
-# Logging
-LOG_LEVEL=info
+DRY_RUN=true                     # Start in paper trading mode
+SCAN_INTERVAL_MS=30000           # Scan every 30 seconds
 ```
 
-5. Update Kashi pair addresses in `src/utils/Config.ts`:
-```typescript
-static getKashiPairAddresses(): { [key: string]: string } {
-  return {
-    'USDC-WETH': '0xYourKashiPairAddress',
-    'DAI-WETH': '0xYourKashiPairAddress',
-    // Add actual mainnet Kashi pair addresses
-  };
-}
-```
-
-6. Build the project:
+5. Build the project:
 ```bash
 npm run build
 ```
 
 ## Usage
 
-### Development Mode
+### Development Mode (with auto-reload)
 ```bash
 npm run dev
 ```
@@ -141,50 +139,56 @@ npm run dev
 npm start
 ```
 
-### Dry Run (Recommended First)
-Set `DRY_RUN=true` in `.env` to simulate trades without executing them.
+### First Steps
+1. **Always start in DRY_RUN mode** to test without risking real money
+2. **Use the demo API** first (`https://demo.kalshi.com/trade-api/v2`)
+3. **Start with small limits** (MAX_POSITION_SIZE=10, MAX_TOTAL_EXPOSURE=50)
+4. **Monitor the logs** to understand how the bot identifies opportunities
+5. **Only go live** after you're comfortable with the bot's behavior
 
 ## Configuration
 
 ### Trading Parameters
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `MIN_PROFIT_USD` | Minimum profit in USD to execute trade | 50 |
-| `MIN_PROFIT_PERCENTAGE` | Minimum profit percentage | 0.5% |
-| `MAX_POSITION_SIZE_ETH` | Maximum position size in ETH | 10 |
-| `GAS_PRICE_LIMIT_GWEI` | Maximum gas price to pay | 100 |
-| `EXECUTION_INTERVAL_MS` | Time between scans | 5000ms |
+| Parameter | Description | Default | Recommended Range |
+|-----------|-------------|---------|-------------------|
+| `MIN_EDGE` | Minimum edge to trade | 0.05 (5%) | 0.03 - 0.10 |
+| `MAX_POSITION_SIZE` | Max $ per position | 100 | 10 - 500 |
+| `MAX_TOTAL_EXPOSURE` | Max total $ exposure | 500 | 100 - 5000 |
+| `KELLY_FRACTION` | Kelly safety factor | 0.25 | 0.1 - 0.5 |
+| `SCAN_INTERVAL_MS` | Time between scans | 30000ms | 10000 - 60000 |
 
-### Risk Parameters (hardcoded in RiskManager)
+### Category Selection
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Max Utilization | 95% | Maximum utilization before rejecting |
-| Max Concentration | 20% | Maximum % of market liquidity |
-| Max Liquidation Risk | 15% | Maximum acceptable liquidation risk |
-| Min Health Factor | 1.5x | Minimum collateralization ratio |
+Focus on specific market categories:
+- `sports` - All sports markets
+- `nfl, nba, mlb, nhl` - Specific leagues
+- `soccer, tennis, golf` - Other sports
+- `politics` - Political outcomes
+- `weather` - Weather forecasts
+- `economics` - Economic indicators
 
 ## Project Structure
 
 ```
-kashi-arbitrage-bot/
+kalshi-game-trading-bot/
 ├── src/
+│   ├── api/
+│   │   └── KalshiClient.ts           # Kalshi API client
 │   ├── bot/
-│   │   └── KashiArbitrageBot.ts      # Main bot orchestrator
-│   ├── contracts/
-│   │   ├── types.ts                   # TypeScript types
-│   │   └── KashiPairABI.ts           # Contract ABIs
-│   ├── data/
-│   │   └── MarketDataFetcher.ts      # Fetch market data
+│   │   └── KalshiTradingBot.ts       # Main bot orchestrator
+│   ├── types/
+│   │   └── KalshiTypes.ts            # TypeScript types
+│   ├── analysis/
+│   │   └── MarketAnalyzer.ts         # Fair value calculation
 │   ├── execution/
-│   │   └── TradeExecutor.ts          # Execute trades
+│   │   └── TradeExecutor.ts          # Trade execution
 │   ├── math/
-│   │   └── ArbitrageMath.ts          # Mathematical calculations
+│   │   └── BettingMath.ts            # Mathematical models
 │   ├── risk/
-│   │   └── RiskManager.ts            # Risk assessment
+│   │   └── RiskManager.ts            # Risk management
 │   ├── strategy/
-│   │   └── OpportunityDetector.ts    # Detect opportunities
+│   │   └── OpportunityDetector.ts    # Opportunity detection
 │   ├── utils/
 │   │   ├── Config.ts                  # Configuration loader
 │   │   └── Logger.ts                  # Logging system
@@ -196,152 +200,209 @@ kashi-arbitrage-bot/
 └── README.md
 ```
 
-## Mathematical Components
+## How the Bot Identifies Opportunities
 
-### ArbitrageMath.ts
-- `calculateInterestRate()` - Interest rate from utilization
-- `calculateSupplyAPY()` - What lenders earn
-- `calculateBorrowAPY()` - What borrowers pay
-- `calculateUtilization()` - Current utilization ratio
-- `calculateArbitrageProfit()` - Expected profit calculation
-- `calculateOptimalPositionSize()` - Optimal trade size
-- `detectArbitrageOpportunity()` - Identify arbitrage spreads
+### 1. Market Scanning
+- Fetches all open markets in specified categories
+- Filters for adequate liquidity (tight spreads, volume)
 
-### OpportunityDetector.ts
-- Scans all market pairs
-- Compares interest rates
-- Calculates profitability
-- Estimates costs
-- Applies profit thresholds
+### 2. Fair Value Calculation
+Uses multiple models to estimate true probability:
+- **Market price** (30% weight) - Current market consensus
+- **Volume-weighted** (20% weight) - Adjusted for trading activity
+- **Spread-adjusted** (15% weight) - Accounts for uncertainty
+- **Time-adjusted** (15% weight) - Nearer events more reliable
+- **Category-specific** (20% weight) - Sports/weather/politics models
 
-### RiskManager.ts
-- Utilization checks
-- Liquidity checks
-- Concentration checks
-- Liquidation risk assessment
-- Position health monitoring
+### 3. Edge Detection
+Compares fair value to market price:
+```
+If fair value = 60% and market ask = 50¢:
+  Edge = 60% - 50% = 10% edge
+  EV = (0.6 × $0.50) - (0.4 × $0.50) / $0.50 = 20% return
 
-## Logging
+If edge > MIN_EDGE (5%): ✓ Opportunity found
+```
 
-The bot maintains detailed logs in the `logs/` directory:
+### 4. Position Sizing
+Uses Kelly Criterion for optimal size:
+```
+Full Kelly = (edge × decimal_odds) / decimal_odds
+Fractional Kelly = Full Kelly × KELLY_FRACTION (0.25)
+Contracts = (Bankroll × Fractional Kelly) / Price
+```
 
-- `combined.log` - All log messages
-- `error.log` - Errors only
-- `trades.log` - Successful trade executions
+### 5. Risk Validation
+- Check sufficient balance
+- Check total exposure limit
+- Check position size limit
+- Check category concentration
+- Adjust for confidence and time to expiration
 
-Log levels: `error`, `warn`, `info`, `debug`
+### 6. Execution
+- Place limit order at current ask/bid
+- Monitor for fill
+- Track position for exit opportunities
 
-## Safety & Best Practices
+## Example Output
 
-1. **Always test in dry-run mode first**
-2. **Start with small position sizes**
-3. **Monitor gas prices** - high gas can eliminate profits
-4. **Use secure RPC endpoints** - rate limits can cause missed opportunities
-5. **Keep private keys secure** - never commit them to version control
-6. **Monitor positions regularly** - market conditions change
-7. **Set appropriate profit thresholds** - don't chase small profits
-8. **Understand the risks** - you can lose money
+```
+============================================================
+KALSHI PREDICTION MARKET TRADING BOT
+Mathematical Trading - Buy Low, Sell High
+============================================================
 
-## Risks
+🔶 DRY RUN MODE - No real trades will be executed
 
-- **Smart contract risk**: Kashi contracts could have bugs
-- **Oracle risk**: Price oracles could be manipulated
-- **Liquidation risk**: Positions can be liquidated if collateral value drops
-- **Gas cost risk**: High gas prices can eliminate profits
-- **Market risk**: Rates can change between detection and execution
-- **Slippage risk**: Large trades can impact market rates
-- **Network risk**: Failed transactions still cost gas
+Starting Kalshi Trading Bot...
+Portfolio Summary:
+  Balance: $1,000.00
+  Positions: 0
+  Exposure: $0.00
+  P&L: $0.00
 
-## Emergency Controls
+Scanning every 30 seconds
 
-The bot includes emergency stop functionality:
+============================================================
+Starting market scan...
+Found 47 open markets
 
-```typescript
-// Graceful shutdown
-CTRL+C or SIGTERM
+Found 3 opportunities in target categories
 
-// Emergency stop in code
-await bot.emergencyStop();
+Top Opportunities:
+------------------------------------------------------------
+1. Will the Lakers win vs Warriors?
+   BUY YES: Fair value 65.0% vs market 52¢. Edge: 13.0%, EV: 25.0%. Models: Market Price (52%), Sports Model (68%)
+   Action: BUY 15 contracts @ 52¢
+   Total cost: $7.80
+
+2. Will it snow in NYC tomorrow?
+   BUY NO: Fair value 75.0% vs market 68¢. Edge: 7.0%, EV: 10.3%. Models: Weather Model (78%), Market Price (68%)
+   Action: BUY 10 contracts @ 68¢
+   Total cost: $6.80
+
+Executing trade:
+  BUY 15 x LAKERS-WIN yes
+
+[DRY RUN] Would buy 15 contracts of LAKERS-WIN yes @ 52¢
+[DRY RUN] Total cost: $7.80
+[DRY RUN] Expected value: 25.0%
+✓ Trade executed successfully!
 ```
 
 ## Monitoring
 
-Track bot performance:
-1. Monitor log files for opportunities and executions
-2. Check transaction hashes on Etherscan
-3. Track wallet balance changes
-4. Monitor gas costs
-5. Review risk assessments
+### Logs
+The bot maintains detailed logs in the `logs/` directory:
+- `combined.log` - All log messages
+- `error.log` - Errors only
+
+### Key Metrics to Watch
+1. **Edge** - Higher is better (aim for > 5%)
+2. **Expected Value** - Return per dollar (aim for > 10%)
+3. **Win Rate** - Track actual vs expected (should converge over time)
+4. **Portfolio Exposure** - Stay within limits
+5. **P&L** - Track realized and unrealized gains/losses
+
+## Risks & Disclaimers
+
+### Trading Risks
+- **Market risk**: Probabilities can change rapidly
+- **Execution risk**: Orders may not fill at desired prices
+- **Model risk**: Fair value estimates can be wrong
+- **Liquidity risk**: Spreads can widen, reducing profitability
+- **API risk**: Connectivity issues can prevent trading
+- **Bankruptcy risk**: You can lose your entire trading capital
+
+### Important Notes
+- This bot is for educational purposes
+- Past performance doesn't guarantee future results
+- Prediction markets involve substantial risk
+- Only trade with money you can afford to lose
+- Test thoroughly in demo mode before going live
+- Monitor positions regularly
+- Understand the mathematics before using
+
+## Safety & Best Practices
+
+1. **Always test in dry-run mode first**
+2. **Start with the demo API** to learn without risk
+3. **Begin with small position sizes** ($10-50)
+4. **Set conservative limits** - protect your bankroll
+5. **Monitor the bot actively** - don't set and forget
+6. **Review trades daily** - learn from successes and failures
+7. **Keep API keys secure** - never commit them
+8. **Use fractional Kelly** - full Kelly is too aggressive
+9. **Diversify across categories** - don't overconcentrate
+10. **Take breaks** - markets will always be there
+
+## Advanced Features
+
+### Arbitrage Detection
+The bot automatically detects rare arbitrage opportunities where:
+```
+YES ask + NO ask < 100¢
+Example: YES @ 48¢, NO @ 49¢ = 97¢ total cost, 100¢ payout = 3¢ guaranteed profit
+```
+
+### Position Management
+- **Profit taking**: Automatically exits at 50%+ gains
+- **Loss cutting**: Exits at 30%+ losses
+- **Time decay**: Reduces position size near expiration
+- **Emergency exits**: Urgent exits for approaching expiration
+
+### Correlation Analysis
+Avoids overexposure by:
+- Limiting positions in same event (max 1 side per market)
+- Reducing size for correlated markets
+- Capping category exposure (max 50% per category)
 
 ## Troubleshooting
 
 ### No opportunities found
-- Check that market addresses are correct
-- Verify RPC connection is working
-- Ensure markets have sufficient liquidity
-- Lower profit thresholds (carefully)
+- Markets may be efficiently priced
+- Try lowering `MIN_EDGE` slightly (3-4%)
+- Expand `CATEGORIES` to more markets
+- Check that markets are open and have volume
 
-### Transactions failing
-- Check gas price limits
-- Verify wallet has sufficient ETH
-- Ensure token approvals are set
-- Check for network congestion
+### Trades not executing
+- Ensure `DRY_RUN=false` for live trading
+- Verify sufficient account balance
+- Check API credentials are correct
+- Ensure within exposure limits
 
-### High gas costs
-- Increase `GAS_PRICE_LIMIT_GWEI` cautiously
-- Consider waiting for lower gas prices
-- Optimize execution timing
-
-## Advanced Features
-
-### Position Monitoring
-The bot can monitor ongoing positions:
-```typescript
-const health = riskManager.monitorPositionHealth(
-  supplyMarket,
-  borrowMarket,
-  positionSize
-);
-```
-
-### Custom Risk Parameters
-Modify risk parameters in `RiskManager.ts` to suit your risk tolerance.
-
-### Multiple Markets
-Add more Kashi pairs to `KASHI_MARKETS` to increase opportunity surface.
+### API errors
+- Check Kalshi API status
+- Verify credentials haven't expired
+- Ensure API URL is correct (demo vs production)
+- Check rate limits (bot includes rate limiting)
 
 ## Future Enhancements
 
 Potential improvements:
-- Flash loan integration for capital efficiency
-- Multi-hop arbitrage across 3+ markets
-- Dynamic position sizing based on volatility
-- MEV protection
+- Machine learning models for fair value
+- Historical backtesting framework
+- Multi-leg strategies (parlays, hedging)
+- Real-time data feeds (sports scores, weather)
 - Telegram/Discord alerts
 - Web dashboard for monitoring
-- Backtesting framework
-- Machine learning for gas price prediction
-
-## Contributing
-
-This is a foundation for a Kashi arbitrage bot. Consider:
-- Adding more comprehensive tests
-- Implementing additional safety checks
-- Optimizing gas usage
-- Adding more sophisticated strategies
+- Advanced correlation modeling
+- Market maker strategies
 
 ## Disclaimer
 
 **USE AT YOUR OWN RISK**
 
-This bot is for educational purposes. Trading cryptocurrency involves substantial risk of loss. The authors are not responsible for any financial losses incurred through use of this software.
+This bot is provided for educational purposes. Trading prediction markets involves substantial risk of loss. The authors are not responsible for any financial losses incurred through use of this software.
 
 - Not financial advice
 - No guarantees of profit
 - You can lose money
-- Smart contracts can fail
-- Markets can be manipulated
+- Markets can be unpredictable
+- Models can be wrong
 - Test thoroughly before live trading
+
+By using this software, you acknowledge that you understand the risks involved and accept full responsibility for your trading decisions.
 
 ## License
 
@@ -350,11 +411,11 @@ MIT License - See LICENSE file for details
 ## Support
 
 For issues and questions:
-1. Check the logs first
-2. Review configuration settings
-3. Ensure RPC endpoint is working
-4. Verify market addresses are correct
+1. Check the logs first (`logs/combined.log`)
+2. Review configuration settings in `.env`
+3. Ensure API credentials are valid
+4. Test in demo mode first
 
 ---
 
-**Remember: This bot uses MATHEMATICS to find arbitrage, not hope. But even mathematical models can fail in real-world conditions. Trade responsibly.**
+**Remember: This bot uses MATHEMATICS to find value, not speculation. But even mathematical models can fail in real-world conditions. Trade responsibly and never risk more than you can afford to lose.**

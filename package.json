@@ -1,7 +1,7 @@
 {
-  "name": "kashi-arbitrage-bot",
+  "name": "kalshi-game-trading-bot",
   "version": "1.0.0",
-  "description": "Mathematical arbitrage trading bot for Kashi lending markets",
+  "description": "Mathematical trading bot for Kalshi prediction markets focused on sports/game contracts",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -9,15 +9,16 @@
     "dev": "ts-node src/index.ts",
     "test": "jest"
   },
-  "keywords": ["kashi", "arbitrage", "defi", "trading-bot"],
+  "keywords": ["kalshi", "prediction-markets", "sports-betting", "trading-bot", "mathematical-trading"],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "ethers": "^6.9.0",
+    "axios": "^1.6.2",
     "dotenv": "^16.3.1",
     "winston": "^3.11.0",
     "bignumber.js": "^9.1.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "ws": "^8.14.2"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -25,6 +26,7 @@
     "ts-node": "^10.9.1",
     "@types/jest": "^29.5.10",
     "jest": "^29.7.0",
-    "@types/uuid": "^9.0.7"
+    "@types/uuid": "^9.0.7",
+    "@types/ws": "^8.5.9"
   }
 }
