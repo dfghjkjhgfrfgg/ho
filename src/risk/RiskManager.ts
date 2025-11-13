@@ -1,450 +1,347 @@
+import { Position, RiskParameters, TradeResult } from '../types';
+import Logger from '../utils/Logger';
 import BigNumber from 'bignumber.js';
-import { ArbitrageOpportunity, KashiMarketData } from '../contracts/types';
+import { v4 as uuidv4 } from 'uuid';
 
-/**
- * Risk management and safety checks for arbitrage trades
- */
 export class RiskManager {
-  private readonly MAX_UTILIZATION = new BigNumber(0.95); // 95%
-  private readonly MAX_POSITION_CONCENTRATION = new BigNumber(0.2); // 20% of liquidity
-  private readonly MAX_LIQUIDATION_RISK = new BigNumber(0.15); // 15%
-  private readonly MIN_HEALTH_FACTOR = new BigNumber(1.5); // 1.5x collateralization
+  private riskParams: RiskParameters;
+  private positions: Map<string, Position> = new Map();
+  private dailyPnL: number = 0;
+  private dailyPnLReset: number = Date.now();
 
-  /**
-   * Perform comprehensive risk assessment
-   */
-  assessRisk(opportunity: ArbitrageOpportunity): RiskAssessment {
-    const checks: RiskCheck[] = [];
-
-    // Check 1: Utilization risk
-    checks.push(this.checkUtilization(opportunity));
-
-    // Check 2: Liquidity risk
-    checks.push(this.checkLiquidity(opportunity));
-
-    // Check 3: Concentration risk
-    checks.push(this.checkConcentration(opportunity));
-
-    // Check 4: Liquidation risk
-    checks.push(this.checkLiquidationRisk(opportunity));
-
-    // Check 5: Profitability risk
-    checks.push(this.checkProfitability(opportunity));
-
-    // Check 6: Market impact
-    checks.push(this.checkMarketImpact(opportunity));
-
-    const failedChecks = checks.filter(c => !c.passed);
-    const criticalFailures = failedChecks.filter(c => c.severity === 'critical');
-
-    return {
-      passed: failedChecks.length === 0,
-      canProceed: criticalFailures.length === 0,
-      riskScore: this.calculateRiskScore(checks),
-      checks,
-      warnings: failedChecks.filter(c => c.severity === 'warning'),
-      criticalIssues: criticalFailures,
-      recommendation: this.getRecommendation(checks)
-    };
+  constructor(riskParams: RiskParameters) {
+    this.riskParams = riskParams;
   }
 
   /**
-   * Check utilization levels
+   * Check if trade passes risk management rules
    */
-  private checkUtilization(opportunity: ArbitrageOpportunity): RiskCheck {
-    const supplyUtilization = opportunity.supplyMarket.utilization;
-    const borrowUtilization = opportunity.borrowMarket.utilization;
+  public canOpenTrade(
+    tokenSymbol: string,
+    tokenAddress: string,
+    entryPrice: number,
+    amount: number,
+    portfolioValue: number
+  ): { allowed: boolean; reason?: string } {
+    try {
+      // Reset daily P&L if new day
+      this.checkDailyPnLReset();
 
-    const maxUtilization = BigNumber.max(supplyUtilization, borrowUtilization);
-
-    if (maxUtilization.gt(this.MAX_UTILIZATION)) {
-      return {
-        name: 'Utilization Check',
-        passed: false,
-        severity: 'critical',
-        message: `Utilization too high: ${maxUtilization
-          .times(100)
-          .toFixed(2)}%`,
-        value: maxUtilization.toNumber()
-      };
-    }
-
-    if (maxUtilization.gt(0.85)) {
-      return {
-        name: 'Utilization Check',
-        passed: false,
-        severity: 'warning',
-        message: `Utilization elevated: ${maxUtilization
-          .times(100)
-          .toFixed(2)}%`,
-        value: maxUtilization.toNumber()
-      };
-    }
-
-    return {
-      name: 'Utilization Check',
-      passed: true,
-      severity: 'info',
-      message: `Utilization acceptable: ${maxUtilization
-        .times(100)
-        .toFixed(2)}%`,
-      value: maxUtilization.toNumber()
-    };
-  }
-
-  /**
-   * Check available liquidity
-   */
-  private checkLiquidity(opportunity: ArbitrageOpportunity): RiskCheck {
-    const minLiquidity = BigNumber.min(
-      opportunity.supplyMarket.availableLiquidity,
-      opportunity.borrowMarket.availableLiquidity
-    );
-
-    const requiredLiquidity = opportunity.optimalAmount;
-
-    if (minLiquidity.lt(requiredLiquidity)) {
-      return {
-        name: 'Liquidity Check',
-        passed: false,
-        severity: 'critical',
-        message: `Insufficient liquidity. Need ${requiredLiquidity.toFixed(
-          0
-        )}, available ${minLiquidity.toFixed(0)}`,
-        value: minLiquidity.toNumber()
-      };
-    }
-
-    const liquidityBuffer = minLiquidity.div(requiredLiquidity);
-    if (liquidityBuffer.lt(1.2)) {
-      return {
-        name: 'Liquidity Check',
-        passed: false,
-        severity: 'warning',
-        message: `Low liquidity buffer: ${liquidityBuffer.toFixed(2)}x`,
-        value: liquidityBuffer.toNumber()
-      };
-    }
-
-    return {
-      name: 'Liquidity Check',
-      passed: true,
-      severity: 'info',
-      message: `Sufficient liquidity: ${liquidityBuffer.toFixed(2)}x buffer`,
-      value: liquidityBuffer.toNumber()
-    };
-  }
-
-  /**
-   * Check position concentration
-   */
-  private checkConcentration(opportunity: ArbitrageOpportunity): RiskCheck {
-    const supplyConcentration = opportunity.optimalAmount.div(
-      opportunity.supplyMarket.totalAsset
-    );
-    const borrowConcentration = opportunity.optimalAmount.div(
-      opportunity.borrowMarket.totalAsset
-    );
-
-    const maxConcentration = BigNumber.max(
-      supplyConcentration,
-      borrowConcentration
-    );
-
-    if (maxConcentration.gt(this.MAX_POSITION_CONCENTRATION)) {
-      return {
-        name: 'Concentration Check',
-        passed: false,
-        severity: 'warning',
-        message: `Position too concentrated: ${maxConcentration
-          .times(100)
-          .toFixed(2)}% of market`,
-        value: maxConcentration.toNumber()
-      };
-    }
-
-    return {
-      name: 'Concentration Check',
-      passed: true,
-      severity: 'info',
-      message: `Position size acceptable: ${maxConcentration
-        .times(100)
-        .toFixed(2)}% of market`,
-      value: maxConcentration.toNumber()
-    };
-  }
-
-  /**
-   * Check liquidation risk
-   */
-  private checkLiquidationRisk(opportunity: ArbitrageOpportunity): RiskCheck {
-    const liquidationRisk = opportunity.liquidationRisk;
-
-    if (liquidationRisk.gt(this.MAX_LIQUIDATION_RISK)) {
-      return {
-        name: 'Liquidation Risk Check',
-        passed: false,
-        severity: 'critical',
-        message: `Liquidation risk too high: ${liquidationRisk
-          .times(100)
-          .toFixed(2)}%`,
-        value: liquidationRisk.toNumber()
-      };
-    }
-
-    if (liquidationRisk.gt(0.05)) {
-      return {
-        name: 'Liquidation Risk Check',
-        passed: false,
-        severity: 'warning',
-        message: `Elevated liquidation risk: ${liquidationRisk
-          .times(100)
-          .toFixed(2)}%`,
-        value: liquidationRisk.toNumber()
-      };
-    }
-
-    return {
-      name: 'Liquidation Risk Check',
-      passed: true,
-      severity: 'info',
-      message: `Liquidation risk acceptable: ${liquidationRisk
-        .times(100)
-        .toFixed(2)}%`,
-      value: liquidationRisk.toNumber()
-    };
-  }
-
-  /**
-   * Check profitability after all costs
-   */
-  private checkProfitability(opportunity: ArbitrageOpportunity): RiskCheck {
-    const netProfit = opportunity.expectedNetProfit;
-    const profitPercentage = opportunity.profitPercentage;
-
-    if (netProfit.lte(0)) {
-      return {
-        name: 'Profitability Check',
-        passed: false,
-        severity: 'critical',
-        message: `Not profitable: $${netProfit.toFixed(2)}`,
-        value: netProfit.toNumber()
-      };
-    }
-
-    if (profitPercentage.lt(0.5)) {
-      return {
-        name: 'Profitability Check',
-        passed: false,
-        severity: 'warning',
-        message: `Low profit margin: ${profitPercentage.toFixed(2)}%`,
-        value: profitPercentage.toNumber()
-      };
-    }
-
-    return {
-      name: 'Profitability Check',
-      passed: true,
-      severity: 'info',
-      message: `Profitable: $${netProfit.toFixed(
-        2
-      )} (${profitPercentage.toFixed(2)}%)`,
-      value: netProfit.toNumber()
-    };
-  }
-
-  /**
-   * Check market impact
-   */
-  private checkMarketImpact(opportunity: ArbitrageOpportunity): RiskCheck {
-    const utilizationImpact = opportunity.utilizationImpact;
-
-    if (utilizationImpact.gt(0.1)) {
-      return {
-        name: 'Market Impact Check',
-        passed: false,
-        severity: 'warning',
-        message: `High market impact: ${utilizationImpact
-          .times(100)
-          .toFixed(2)}% utilization change`,
-        value: utilizationImpact.toNumber()
-      };
-    }
-
-    return {
-      name: 'Market Impact Check',
-      passed: true,
-      severity: 'info',
-      message: `Low market impact: ${utilizationImpact
-        .times(100)
-        .toFixed(2)}% utilization change`,
-      value: utilizationImpact.toNumber()
-    };
-  }
-
-  /**
-   * Calculate overall risk score (0-100, lower is better)
-   */
-  private calculateRiskScore(checks: RiskCheck[]): number {
-    let score = 0;
-
-    checks.forEach(check => {
-      if (!check.passed) {
-        if (check.severity === 'critical') {
-          score += 40;
-        } else if (check.severity === 'warning') {
-          score += 15;
-        }
+      // Check max open positions
+      if (this.positions.size >= this.riskParams.maxOpenPositions) {
+        return {
+          allowed: false,
+          reason: `Maximum open positions reached (${this.riskParams.maxOpenPositions})`,
+        };
       }
+
+      // Check position size in USD
+      const positionValue = entryPrice * amount;
+      if (positionValue > this.riskParams.maxPositionSize) {
+        return {
+          allowed: false,
+          reason: `Position size exceeds maximum ($${this.riskParams.maxPositionSize})`,
+        };
+      }
+
+      // Check portfolio percentage
+      const portfolioPercent = (positionValue / portfolioValue) * 100;
+      if (portfolioPercent > this.riskParams.maxPortfolioPercent) {
+        return {
+          allowed: false,
+          reason: `Position exceeds ${this.riskParams.maxPortfolioPercent}% of portfolio`,
+        };
+      }
+
+      // Check daily loss limit
+      if (Math.abs(this.dailyPnL) >= this.riskParams.maxDailyLoss) {
+        return {
+          allowed: false,
+          reason: `Daily loss limit reached ($${this.riskParams.maxDailyLoss})`,
+        };
+      }
+
+      // Check if already have position in this token
+      const existingPosition = Array.from(this.positions.values()).find(
+        (p) => p.tokenAddress === tokenAddress && p.status === 'OPEN'
+      );
+
+      if (existingPosition) {
+        return {
+          allowed: false,
+          reason: `Already have open position in ${tokenSymbol}`,
+        };
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      Logger.error('Risk check failed', error);
+      return {
+        allowed: false,
+        reason: 'Risk check failed',
+      };
+    }
+  }
+
+  /**
+   * Open a new position
+   */
+  public openPosition(
+    tokenAddress: string,
+    tokenSymbol: string,
+    entryPrice: number,
+    amount: number
+  ): Position {
+    const stopLoss = entryPrice * (1 - this.riskParams.stopLossPercent / 100);
+    const takeProfit = entryPrice * (1 + this.riskParams.takeProfitPercent / 100);
+    const trailingStop = entryPrice * (1 - this.riskParams.trailingStopPercent / 100);
+
+    const position: Position = {
+      id: uuidv4(),
+      tokenAddress,
+      tokenSymbol,
+      entryPrice,
+      currentPrice: entryPrice,
+      amount,
+      value: entryPrice * amount,
+      pnl: 0,
+      pnlPercent: 0,
+      stopLoss,
+      takeProfit,
+      trailingStop,
+      openedAt: Date.now(),
+      status: 'OPEN',
+    };
+
+    this.positions.set(position.id, position);
+
+    Logger.risk('Position opened', {
+      id: position.id,
+      symbol: tokenSymbol,
+      entryPrice,
+      amount,
+      stopLoss,
+      takeProfit,
     });
 
-    return Math.min(score, 100);
+    return position;
   }
 
   /**
-   * Get execution recommendation
+   * Update position with current price
    */
-  private getRecommendation(checks: RiskCheck[]): string {
-    const criticalFailures = checks.filter(
-      c => !c.passed && c.severity === 'critical'
-    );
-    const warnings = checks.filter(
-      c => !c.passed && c.severity === 'warning'
-    );
+  public updatePosition(positionId: string, currentPrice: number): Position | null {
+    const position = this.positions.get(positionId);
+    if (!position) return null;
 
-    if (criticalFailures.length > 0) {
-      return `DO NOT EXECUTE: ${criticalFailures.length} critical issue(s)`;
+    position.currentPrice = currentPrice;
+    position.value = currentPrice * position.amount;
+    position.pnl = (currentPrice - position.entryPrice) * position.amount;
+    position.pnlPercent = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
+
+    // Update trailing stop if price moved favorably
+    if (currentPrice > position.entryPrice) {
+      const newTrailingStop =
+        currentPrice * (1 - this.riskParams.trailingStopPercent / 100);
+      if (newTrailingStop > position.trailingStop) {
+        position.trailingStop = newTrailingStop;
+        Logger.risk('Trailing stop updated', {
+          id: positionId,
+          symbol: position.tokenSymbol,
+          newTrailingStop,
+        });
+      }
     }
 
-    if (warnings.length > 2) {
-      return `CAUTION: ${warnings.length} warnings - proceed with extreme caution`;
-    }
-
-    if (warnings.length > 0) {
-      return `PROCEED WITH CAUTION: ${warnings.length} warning(s)`;
-    }
-
-    return 'SAFE TO EXECUTE: All checks passed';
+    return position;
   }
 
   /**
-   * Monitor ongoing position health
+   * Check if position should be closed
    */
-  monitorPositionHealth(
-    supplyMarket: KashiMarketData,
-    borrowMarket: KashiMarketData,
-    positionSize: BigNumber
-  ): PositionHealth {
-    const currentSpread = supplyMarket.supplyAPY.minus(
-      borrowMarket.borrowAPY
-    );
+  public shouldClosePosition(position: Position): {
+    shouldClose: boolean;
+    reason?: string;
+  } {
+    // Check stop loss
+    if (position.currentPrice <= position.stopLoss) {
+      return {
+        shouldClose: true,
+        reason: `Stop loss hit at $${position.stopLoss.toFixed(4)}`,
+      };
+    }
 
-    const healthFactor = this.calculateHealthFactor(
-      supplyMarket,
-      borrowMarket,
-      positionSize
-    );
+    // Check trailing stop
+    if (position.currentPrice <= position.trailingStop) {
+      return {
+        shouldClose: true,
+        reason: `Trailing stop hit at $${position.trailingStop.toFixed(4)}`,
+      };
+    }
 
-    const status = this.determineHealthStatus(healthFactor, currentSpread);
+    // Check take profit
+    if (position.currentPrice >= position.takeProfit) {
+      return {
+        shouldClose: true,
+        reason: `Take profit reached at $${position.takeProfit.toFixed(4)}`,
+      };
+    }
 
-    return {
-      healthFactor,
-      currentSpread,
-      supplyUtilization: supplyMarket.utilization,
-      borrowUtilization: borrowMarket.utilization,
-      status,
-      shouldClose: status === 'critical',
-      recommendation: this.getHealthRecommendation(status, healthFactor)
-    };
+    return { shouldClose: false };
   }
 
   /**
-   * Calculate health factor for position
+   * Close a position
    */
-  private calculateHealthFactor(
-    supplyMarket: KashiMarketData,
-    borrowMarket: KashiMarketData,
-    positionSize: BigNumber
-  ): BigNumber {
-    // Simplified health factor calculation
-    // Real implementation would account for collateralization ratios
-    const supplyValue = positionSize;
-    const borrowValue = positionSize;
+  public closePosition(positionId: string, closePrice: number): Position | null {
+    const position = this.positions.get(positionId);
+    if (!position) return null;
 
-    return supplyValue.div(borrowValue);
+    position.status = 'CLOSED';
+    position.currentPrice = closePrice;
+    position.pnl = (closePrice - position.entryPrice) * position.amount;
+    position.pnlPercent = ((closePrice - position.entryPrice) / position.entryPrice) * 100;
+
+    // Update daily P&L
+    this.dailyPnL += position.pnl;
+
+    Logger.risk('Position closed', {
+      id: positionId,
+      symbol: position.tokenSymbol,
+      entryPrice: position.entryPrice,
+      closePrice,
+      pnl: position.pnl.toFixed(2),
+      pnlPercent: position.pnlPercent.toFixed(2),
+    });
+
+    return position;
   }
 
   /**
-   * Determine position health status
+   * Calculate position size based on risk
    */
-  private determineHealthStatus(
-    healthFactor: BigNumber,
-    currentSpread: BigNumber
-  ): HealthStatus {
-    if (healthFactor.lt(1.1) || currentSpread.lt(-0.01)) {
-      return 'critical';
-    }
+  public calculatePositionSize(
+    entryPrice: number,
+    portfolioValue: number,
+    volatility: number
+  ): number {
+    try {
+      // Kelly Criterion for position sizing
+      // f = (bp - q) / b
+      // where:
+      // f = fraction of portfolio to bet
+      // b = odds (risk/reward ratio)
+      // p = probability of winning
+      // q = probability of losing (1 - p)
 
-    if (healthFactor.lt(1.3) || currentSpread.lt(0)) {
-      return 'warning';
-    }
+      // Simplified: risk 1-2% of portfolio per trade
+      const riskPercent = 1.5; // 1.5% of portfolio
+      const riskAmount = (portfolioValue * riskPercent) / 100;
 
-    if (healthFactor.lt(1.5) || currentSpread.lt(0.005)) {
-      return 'caution';
-    }
+      // Calculate position size based on stop loss
+      const stopDistance = this.riskParams.stopLossPercent / 100;
+      const positionValue = riskAmount / stopDistance;
 
-    return 'healthy';
+      // Apply constraints
+      const maxPositionValue = Math.min(
+        positionValue,
+        this.riskParams.maxPositionSize,
+        (portfolioValue * this.riskParams.maxPortfolioPercent) / 100
+      );
+
+      const positionSize = maxPositionValue / entryPrice;
+
+      return positionSize;
+    } catch (error) {
+      Logger.error('Position size calculation failed', error);
+      return 0;
+    }
   }
 
   /**
-   * Get health-based recommendation
+   * Calculate risk/reward ratio
    */
-  private getHealthRecommendation(
-    status: HealthStatus,
-    healthFactor: BigNumber
-  ): string {
-    switch (status) {
-      case 'critical':
-        return `CLOSE POSITION IMMEDIATELY: Health factor ${healthFactor.toFixed(
-          2
-        )}`;
-      case 'warning':
-        return `CLOSE POSITION SOON: Health factor ${healthFactor.toFixed(2)}`;
-      case 'caution':
-        return `MONITOR CLOSELY: Health factor ${healthFactor.toFixed(2)}`;
-      default:
-        return `HEALTHY: Health factor ${healthFactor.toFixed(2)}`;
+  public calculateRiskReward(
+    entryPrice: number,
+    stopLoss: number,
+    takeProfit: number
+  ): number {
+    const risk = entryPrice - stopLoss;
+    const reward = takeProfit - entryPrice;
+
+    if (risk <= 0) return 0;
+
+    return reward / risk;
+  }
+
+  /**
+   * Check if risk/reward ratio is acceptable
+   */
+  public isAcceptableRiskReward(
+    entryPrice: number,
+    stopLoss: number,
+    takeProfit: number
+  ): boolean {
+    const ratio = this.calculateRiskReward(entryPrice, stopLoss, takeProfit);
+    return ratio >= this.riskParams.minRiskRewardRatio;
+  }
+
+  /**
+   * Get all open positions
+   */
+  public getOpenPositions(): Position[] {
+    return Array.from(this.positions.values()).filter((p) => p.status === 'OPEN');
+  }
+
+  /**
+   * Get position by ID
+   */
+  public getPosition(positionId: string): Position | null {
+    return this.positions.get(positionId) || null;
+  }
+
+  /**
+   * Get total portfolio exposure
+   */
+  public getTotalExposure(): number {
+    return this.getOpenPositions().reduce((total, position) => total + position.value, 0);
+  }
+
+  /**
+   * Get daily P&L
+   */
+  public getDailyPnL(): number {
+    return this.dailyPnL;
+  }
+
+  /**
+   * Reset daily P&L at start of new day
+   */
+  private checkDailyPnLReset(): void {
+    const now = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    if (now - this.dailyPnLReset >= oneDayMs) {
+      Logger.info('Resetting daily P&L', { previousPnL: this.dailyPnL });
+      this.dailyPnL = 0;
+      this.dailyPnLReset = now;
     }
+  }
+
+  /**
+   * Get risk parameters
+   */
+  public getRiskParameters(): RiskParameters {
+    return { ...this.riskParams };
+  }
+
+  /**
+   * Update risk parameters
+   */
+  public updateRiskParameters(params: Partial<RiskParameters>): void {
+    this.riskParams = { ...this.riskParams, ...params };
+    Logger.info('Risk parameters updated', params);
   }
 }
 
-// Types
-export interface RiskAssessment {
-  passed: boolean;
-  canProceed: boolean;
-  riskScore: number;
-  checks: RiskCheck[];
-  warnings: RiskCheck[];
-  criticalIssues: RiskCheck[];
-  recommendation: string;
-}
-
-export interface RiskCheck {
-  name: string;
-  passed: boolean;
-  severity: 'info' | 'warning' | 'critical';
-  message: string;
-  value: number;
-}
-
-export interface PositionHealth {
-  healthFactor: BigNumber;
-  currentSpread: BigNumber;
-  supplyUtilization: BigNumber;
-  borrowUtilization: BigNumber;
-  status: HealthStatus;
-  shouldClose: boolean;
-  recommendation: string;
-}
-
-export type HealthStatus = 'healthy' | 'caution' | 'warning' | 'critical';
+export default RiskManager;

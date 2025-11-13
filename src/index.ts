@@ -1,69 +1,59 @@
-import { KashiArbitrageBot } from './bot/KashiArbitrageBot';
-import { Config } from './utils/Config';
-import { Logger } from './utils/Logger';
+import TradingBot from './bot/TradingBot';
+import Logger from './utils/Logger';
+import Config from './config';
 
-/**
- * Main entry point for the Kashi Arbitrage Trading Bot
- */
+// Handle graceful shutdown
+let bot: TradingBot | null = null;
+
 async function main() {
-  // Ensure logs directory exists
-  Logger.ensureLogsDirectory();
-
-  // Load configuration
-  let config;
   try {
-    config = Config.load();
-  } catch (error) {
-    console.error('Failed to load configuration:', error);
-    process.exit(1);
-  }
+    Logger.info('='.repeat(60));
+    Logger.info('🚀 Solana Crypto Trading Bot');
+    Logger.info('='.repeat(60));
 
-  // Create and start bot
-  const bot = new KashiArbitrageBot(config);
+    const config = Config.getConfig();
+    Logger.info(`Mode: ${config.mode}`);
+    Logger.info(`Network: ${config.network}`);
+    Logger.info(`RPC: ${config.rpcEndpoint}`);
+    Logger.info('='.repeat(60));
 
-  // Handle graceful shutdown
-  process.on('SIGINT', async () => {
-    console.log('\nReceived SIGINT, shutting down gracefully...');
-    bot.stop();
-    process.exit(0);
-  });
-
-  process.on('SIGTERM', async () => {
-    console.log('\nReceived SIGTERM, shutting down gracefully...');
-    bot.stop();
-    process.exit(0);
-  });
-
-  // Handle uncaught errors
-  process.on('uncaughtException', async (error) => {
-    console.error('Uncaught exception:', error);
-    await bot.emergencyStop();
-    process.exit(1);
-  });
-
-  process.on('unhandledRejection', async (reason, promise) => {
-    console.error('Unhandled rejection at:', promise, 'reason:', reason);
-    await bot.emergencyStop();
-    process.exit(1);
-  });
-
-  // Start the bot
-  try {
-    console.log('='.repeat(60));
-    console.log('KASHI ARBITRAGE TRADING BOT');
-    console.log('Mathematics-Based Trading - No Hope, Only Math');
-    console.log('='.repeat(60));
-    console.log('');
-
+    // Create and start bot
+    bot = new TradingBot();
     await bot.start();
+
+    Logger.info('Bot is now running. Press Ctrl+C to stop.');
   } catch (error) {
-    console.error('Fatal error:', error);
+    Logger.error('Fatal error', error);
     process.exit(1);
   }
 }
 
-// Run the bot
-main().catch((error) => {
-  console.error('Failed to start bot:', error);
+// Graceful shutdown handlers
+process.on('SIGINT', async () => {
+  Logger.info('\nReceived SIGINT, shutting down gracefully...');
+  if (bot) {
+    await bot.stop();
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  Logger.info('\nReceived SIGTERM, shutting down gracefully...');
+  if (bot) {
+    await bot.stop();
+  }
+  process.exit(0);
+});
+
+process.on('uncaughtException', (error) => {
+  Logger.error('Uncaught exception', error);
   process.exit(1);
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  Logger.error('Unhandled rejection', { reason, promise });
+  process.exit(1);
+});
+
+// Start the bot
+main();
