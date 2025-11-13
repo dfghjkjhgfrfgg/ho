@@ -1,450 +1,392 @@
-import BigNumber from 'bignumber.js';
-import { ArbitrageOpportunity, KashiMarketData } from '../contracts/types';
+import { KalshiClient } from '../api/KalshiClient';
+import {
+  KalshiConfig,
+  TradingOpportunity,
+  PortfolioSummary,
+  KalshiPosition,
+} from '../types/KalshiTypes';
+import { Logger } from '../utils/Logger';
 
 /**
- * Risk management and safety checks for arbitrage trades
+ * Manages risk and portfolio exposure for Kalshi trading
+ * Implements position sizing, exposure limits, and portfolio management
  */
 export class RiskManager {
-  private readonly MAX_UTILIZATION = new BigNumber(0.95); // 95%
-  private readonly MAX_POSITION_CONCENTRATION = new BigNumber(0.2); // 20% of liquidity
-  private readonly MAX_LIQUIDATION_RISK = new BigNumber(0.15); // 15%
-  private readonly MIN_HEALTH_FACTOR = new BigNumber(1.5); // 1.5x collateralization
+  private client: KalshiClient;
+  private config: KalshiConfig;
+  private logger = Logger.getInstance();
 
-  /**
-   * Perform comprehensive risk assessment
-   */
-  assessRisk(opportunity: ArbitrageOpportunity): RiskAssessment {
-    const checks: RiskCheck[] = [];
-
-    // Check 1: Utilization risk
-    checks.push(this.checkUtilization(opportunity));
-
-    // Check 2: Liquidity risk
-    checks.push(this.checkLiquidity(opportunity));
-
-    // Check 3: Concentration risk
-    checks.push(this.checkConcentration(opportunity));
-
-    // Check 4: Liquidation risk
-    checks.push(this.checkLiquidationRisk(opportunity));
-
-    // Check 5: Profitability risk
-    checks.push(this.checkProfitability(opportunity));
-
-    // Check 6: Market impact
-    checks.push(this.checkMarketImpact(opportunity));
-
-    const failedChecks = checks.filter(c => !c.passed);
-    const criticalFailures = failedChecks.filter(c => c.severity === 'critical');
-
-    return {
-      passed: failedChecks.length === 0,
-      canProceed: criticalFailures.length === 0,
-      riskScore: this.calculateRiskScore(checks),
-      checks,
-      warnings: failedChecks.filter(c => c.severity === 'warning'),
-      criticalIssues: criticalFailures,
-      recommendation: this.getRecommendation(checks)
-    };
+  constructor(client: KalshiClient, config: KalshiConfig) {
+    this.client = client;
+    this.config = config;
   }
 
   /**
-   * Check utilization levels
+   * Get current portfolio summary
    */
-  private checkUtilization(opportunity: ArbitrageOpportunity): RiskCheck {
-    const supplyUtilization = opportunity.supplyMarket.utilization;
-    const borrowUtilization = opportunity.borrowMarket.utilization;
+  async getPortfolioSummary(): Promise<PortfolioSummary> {
+    const [balance, positions] = await Promise.all([
+      this.client.getBalance(),
+      this.client.getPositions(),
+    ]);
 
-    const maxUtilization = BigNumber.max(supplyUtilization, borrowUtilization);
-
-    if (maxUtilization.gt(this.MAX_UTILIZATION)) {
-      return {
-        name: 'Utilization Check',
-        passed: false,
-        severity: 'critical',
-        message: `Utilization too high: ${maxUtilization
-          .times(100)
-          .toFixed(2)}%`,
-        value: maxUtilization.toNumber()
-      };
-    }
-
-    if (maxUtilization.gt(0.85)) {
-      return {
-        name: 'Utilization Check',
-        passed: false,
-        severity: 'warning',
-        message: `Utilization elevated: ${maxUtilization
-          .times(100)
-          .toFixed(2)}%`,
-        value: maxUtilization.toNumber()
-      };
-    }
-
-    return {
-      name: 'Utilization Check',
-      passed: true,
-      severity: 'info',
-      message: `Utilization acceptable: ${maxUtilization
-        .times(100)
-        .toFixed(2)}%`,
-      value: maxUtilization.toNumber()
-    };
-  }
-
-  /**
-   * Check available liquidity
-   */
-  private checkLiquidity(opportunity: ArbitrageOpportunity): RiskCheck {
-    const minLiquidity = BigNumber.min(
-      opportunity.supplyMarket.availableLiquidity,
-      opportunity.borrowMarket.availableLiquidity
+    const totalExposure = positions.reduce(
+      (sum, pos) => sum + pos.market_exposure,
+      0
     );
 
-    const requiredLiquidity = opportunity.optimalAmount;
-
-    if (minLiquidity.lt(requiredLiquidity)) {
-      return {
-        name: 'Liquidity Check',
-        passed: false,
-        severity: 'critical',
-        message: `Insufficient liquidity. Need ${requiredLiquidity.toFixed(
-          0
-        )}, available ${minLiquidity.toFixed(0)}`,
-        value: minLiquidity.toNumber()
-      };
-    }
-
-    const liquidityBuffer = minLiquidity.div(requiredLiquidity);
-    if (liquidityBuffer.lt(1.2)) {
-      return {
-        name: 'Liquidity Check',
-        passed: false,
-        severity: 'warning',
-        message: `Low liquidity buffer: ${liquidityBuffer.toFixed(2)}x`,
-        value: liquidityBuffer.toNumber()
-      };
-    }
-
-    return {
-      name: 'Liquidity Check',
-      passed: true,
-      severity: 'info',
-      message: `Sufficient liquidity: ${liquidityBuffer.toFixed(2)}x buffer`,
-      value: liquidityBuffer.toNumber()
-    };
-  }
-
-  /**
-   * Check position concentration
-   */
-  private checkConcentration(opportunity: ArbitrageOpportunity): RiskCheck {
-    const supplyConcentration = opportunity.optimalAmount.div(
-      opportunity.supplyMarket.totalAsset
-    );
-    const borrowConcentration = opportunity.optimalAmount.div(
-      opportunity.borrowMarket.totalAsset
+    const realizedPnl = positions.reduce(
+      (sum, pos) => sum + pos.realized_pnl,
+      0
     );
 
-    const maxConcentration = BigNumber.max(
-      supplyConcentration,
-      borrowConcentration
+    const unrealizedPnl = positions.reduce(
+      (sum, pos) => sum + pos.unrealized_pnl,
+      0
     );
 
-    if (maxConcentration.gt(this.MAX_POSITION_CONCENTRATION)) {
-      return {
-        name: 'Concentration Check',
-        passed: false,
-        severity: 'warning',
-        message: `Position too concentrated: ${maxConcentration
-          .times(100)
-          .toFixed(2)}% of market`,
-        value: maxConcentration.toNumber()
-      };
-    }
-
     return {
-      name: 'Concentration Check',
-      passed: true,
-      severity: 'info',
-      message: `Position size acceptable: ${maxConcentration
-        .times(100)
-        .toFixed(2)}% of market`,
-      value: maxConcentration.toNumber()
+      totalBalance: balance.balance,
+      totalExposure,
+      positionCount: positions.length,
+      realizedPnl,
+      unrealizedPnl,
+      positions,
     };
   }
 
   /**
-   * Check liquidation risk
+   * Check if opportunity passes risk constraints
    */
-  private checkLiquidationRisk(opportunity: ArbitrageOpportunity): RiskCheck {
-    const liquidationRisk = opportunity.liquidationRisk;
+  async canTakePosition(
+    opportunity: TradingOpportunity
+  ): Promise<{ approved: boolean; reason?: string }> {
+    // Check 1: Get current portfolio state
+    const portfolio = await this.getPortfolioSummary();
 
-    if (liquidationRisk.gt(this.MAX_LIQUIDATION_RISK)) {
+    // Check 2: Validate bankroll
+    const balance = portfolio.totalBalance / 100; // Convert cents to dollars
+    if (balance < opportunity.recommendedSize * opportunity.currentPrice / 100) {
       return {
-        name: 'Liquidation Risk Check',
-        passed: false,
-        severity: 'critical',
-        message: `Liquidation risk too high: ${liquidationRisk
-          .times(100)
-          .toFixed(2)}%`,
-        value: liquidationRisk.toNumber()
+        approved: false,
+        reason: `Insufficient balance: $${balance.toFixed(2)}`,
       };
     }
 
-    if (liquidationRisk.gt(0.05)) {
+    // Check 3: Check total exposure limit
+    const currentExposure = portfolio.totalExposure / 100; // Convert to dollars
+    const newPositionCost = (opportunity.recommendedSize * opportunity.currentPrice) / 100;
+    const totalExposure = currentExposure + newPositionCost;
+
+    if (totalExposure > this.config.maxTotalExposure) {
       return {
-        name: 'Liquidation Risk Check',
-        passed: false,
-        severity: 'warning',
-        message: `Elevated liquidation risk: ${liquidationRisk
-          .times(100)
-          .toFixed(2)}%`,
-        value: liquidationRisk.toNumber()
+        approved: false,
+        reason: `Would exceed max exposure: $${totalExposure.toFixed(2)} > $${this.config.maxTotalExposure}`,
       };
     }
+
+    // Check 4: Position size limit
+    if (newPositionCost > this.config.maxPositionSize) {
+      return {
+        approved: false,
+        reason: `Position too large: $${newPositionCost.toFixed(2)} > $${this.config.maxPositionSize}`,
+      };
+    }
+
+    // Check 5: Minimum edge requirement
+    if (opportunity.edge < this.config.minEdge) {
+      return {
+        approved: false,
+        reason: `Edge too low: ${(opportunity.edge * 100).toFixed(1)}% < ${(this.config.minEdge * 100).toFixed(1)}%`,
+      };
+    }
+
+    // Check 6: Correlation/concentration check
+    const concentrationCheck = await this.checkConcentration(
+      portfolio,
+      opportunity
+    );
+
+    if (!concentrationCheck.approved) {
+      return concentrationCheck;
+    }
+
+    return { approved: true };
+  }
+
+  /**
+   * Check for portfolio concentration risk
+   */
+  private async checkConcentration(
+    portfolio: PortfolioSummary,
+    opportunity: TradingOpportunity
+  ): Promise<{ approved: boolean; reason?: string }> {
+    // Count positions in same category
+    const categoryPositions = portfolio.positions.filter((pos) =>
+      opportunity.category.toLowerCase().includes(pos.ticker.toLowerCase().slice(0, 3))
+    );
+
+    const categoryExposure = categoryPositions.reduce(
+      (sum, pos) => sum + pos.market_exposure,
+      0
+    ) / 100;
+
+    const maxCategoryExposure = this.config.maxTotalExposure * 0.5; // Max 50% in one category
+
+    const newPositionCost = (opportunity.recommendedSize * opportunity.currentPrice) / 100;
+
+    if (categoryExposure + newPositionCost > maxCategoryExposure) {
+      return {
+        approved: false,
+        reason: `Category overexposure: ${opportunity.category} already has $${categoryExposure.toFixed(2)}`,
+      };
+    }
+
+    // Check if we already have a position in this exact market
+    const existingPosition = portfolio.positions.find(
+      (pos) => pos.ticker === opportunity.ticker
+    );
+
+    if (existingPosition) {
+      // Only allow adding to position if on same side
+      const existingSide = existingPosition.position > 0 ? 'yes' : 'no';
+      if (existingSide !== opportunity.side) {
+        return {
+          approved: false,
+          reason: `Already have opposite position in ${opportunity.ticker}`,
+        };
+      }
+    }
+
+    return { approved: true };
+  }
+
+  /**
+   * Adjust position size based on confidence and risk
+   */
+  adjustPositionSize(
+    opportunity: TradingOpportunity,
+    baseSize: number
+  ): number {
+    let adjustedSize = baseSize;
+
+    // Adjust for confidence
+    // Lower confidence = smaller position
+    if (opportunity.confidence < 0.7) {
+      adjustedSize = Math.floor(adjustedSize * 0.5);
+    } else if (opportunity.confidence < 0.8) {
+      adjustedSize = Math.floor(adjustedSize * 0.75);
+    }
+
+    // Adjust for time to expiration
+    const expirationDate = new Date(opportunity.expirationTime);
+    const now = new Date();
+    const hoursUntilExpiration =
+      (expirationDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    // Reduce size for events far in future (more uncertainty)
+    if (hoursUntilExpiration > 168) {
+      // > 7 days
+      adjustedSize = Math.floor(adjustedSize * 0.5);
+    } else if (hoursUntilExpiration > 72) {
+      // > 3 days
+      adjustedSize = Math.floor(adjustedSize * 0.75);
+    }
+
+    // Reduce size for events very close to expiration (execution risk)
+    if (hoursUntilExpiration < 2) {
+      adjustedSize = Math.floor(adjustedSize * 0.3);
+    }
+
+    return Math.max(1, adjustedSize);
+  }
+
+  /**
+   * Identify positions that should be closed
+   */
+  async identifyExitOpportunities(): Promise<{
+    ticker: string;
+    side: 'yes' | 'no';
+    contracts: number;
+    reason: string;
+    urgency: 'low' | 'medium' | 'high';
+  }[]> {
+    const positions = await this.client.getPositions();
+    const exits: any[] = [];
+
+    for (const position of positions) {
+      // Skip positions with no contracts
+      if (position.position === 0) {
+        continue;
+      }
+
+      const side = position.position > 0 ? 'yes' : 'no';
+      const contracts = Math.abs(position.position);
+
+      // Exit if close to expiration
+      try {
+        const market = await this.client.getMarket(position.ticker);
+        const expirationDate = new Date(market.expiration_time);
+        const now = new Date();
+        const hoursUntilExpiration =
+          (expirationDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+        if (hoursUntilExpiration < 1) {
+          exits.push({
+            ticker: position.ticker,
+            side,
+            contracts,
+            reason: 'Approaching expiration',
+            urgency: 'high' as const,
+          });
+          continue;
+        }
+
+        // Exit if showing good profit
+        const profitPercent = position.unrealized_pnl / position.total_cost;
+        if (profitPercent > 0.5) {
+          // 50% profit
+          exits.push({
+            ticker: position.ticker,
+            side,
+            contracts,
+            reason: `Take profit: ${(profitPercent * 100).toFixed(1)}% gain`,
+            urgency: 'low' as const,
+          });
+        }
+
+        // Exit if showing large loss
+        if (profitPercent < -0.3) {
+          // 30% loss
+          exits.push({
+            ticker: position.ticker,
+            side,
+            contracts,
+            reason: `Cut loss: ${(profitPercent * 100).toFixed(1)}% loss`,
+            urgency: 'high' as const,
+          });
+        }
+      } catch (error) {
+        this.logger.error(`Error analyzing position ${position.ticker}:`, error);
+      }
+    }
+
+    return exits;
+  }
+
+  /**
+   * Calculate risk metrics for reporting
+   */
+  async calculateRiskMetrics(): Promise<{
+    sharpeRatio: number;
+    maxDrawdown: number;
+    winRate: number;
+    profitFactor: number;
+    averageWin: number;
+    averageLoss: number;
+  }> {
+    // This would require historical trade data
+    // Simplified version for now
+    const portfolio = await this.getPortfolioSummary();
+
+    const totalPnl = portfolio.realizedPnl + portfolio.unrealizedPnl;
+    const initialBalance = 10000 * 100; // Assume $10k starting (in cents)
 
     return {
-      name: 'Liquidation Risk Check',
-      passed: true,
-      severity: 'info',
-      message: `Liquidation risk acceptable: ${liquidationRisk
-        .times(100)
-        .toFixed(2)}%`,
-      value: liquidationRisk.toNumber()
+      sharpeRatio: 0, // Would need return history
+      maxDrawdown: 0, // Would need balance history
+      winRate: 0, // Would need trade history
+      profitFactor: totalPnl > 0 ? 1.5 : 0.5, // Placeholder
+      averageWin: 0,
+      averageLoss: 0,
     };
   }
 
   /**
-   * Check profitability after all costs
+   * Emergency stop - cancel all orders and prepare to close positions
    */
-  private checkProfitability(opportunity: ArbitrageOpportunity): RiskCheck {
-    const netProfit = opportunity.expectedNetProfit;
-    const profitPercentage = opportunity.profitPercentage;
+  async emergencyStop(): Promise<void> {
+    this.logger.warn('EMERGENCY STOP INITIATED');
 
-    if (netProfit.lte(0)) {
-      return {
-        name: 'Profitability Check',
-        passed: false,
-        severity: 'critical',
-        message: `Not profitable: $${netProfit.toFixed(2)}`,
-        value: netProfit.toNumber()
-      };
-    }
+    try {
+      // Get all pending orders
+      const ordersResponse = await this.client.getOrders({
+        status: 'resting',
+      });
 
-    if (profitPercentage.lt(0.5)) {
-      return {
-        name: 'Profitability Check',
-        passed: false,
-        severity: 'warning',
-        message: `Low profit margin: ${profitPercentage.toFixed(2)}%`,
-        value: profitPercentage.toNumber()
-      };
-    }
-
-    return {
-      name: 'Profitability Check',
-      passed: true,
-      severity: 'info',
-      message: `Profitable: $${netProfit.toFixed(
-        2
-      )} (${profitPercentage.toFixed(2)}%)`,
-      value: netProfit.toNumber()
-    };
-  }
-
-  /**
-   * Check market impact
-   */
-  private checkMarketImpact(opportunity: ArbitrageOpportunity): RiskCheck {
-    const utilizationImpact = opportunity.utilizationImpact;
-
-    if (utilizationImpact.gt(0.1)) {
-      return {
-        name: 'Market Impact Check',
-        passed: false,
-        severity: 'warning',
-        message: `High market impact: ${utilizationImpact
-          .times(100)
-          .toFixed(2)}% utilization change`,
-        value: utilizationImpact.toNumber()
-      };
-    }
-
-    return {
-      name: 'Market Impact Check',
-      passed: true,
-      severity: 'info',
-      message: `Low market impact: ${utilizationImpact
-        .times(100)
-        .toFixed(2)}% utilization change`,
-      value: utilizationImpact.toNumber()
-    };
-  }
-
-  /**
-   * Calculate overall risk score (0-100, lower is better)
-   */
-  private calculateRiskScore(checks: RiskCheck[]): number {
-    let score = 0;
-
-    checks.forEach(check => {
-      if (!check.passed) {
-        if (check.severity === 'critical') {
-          score += 40;
-        } else if (check.severity === 'warning') {
-          score += 15;
+      // Cancel all pending orders
+      for (const order of ordersResponse.orders) {
+        try {
+          await this.client.cancelOrder(order.order_id);
+          this.logger.info(`Canceled order ${order.order_id}`);
+        } catch (error) {
+          this.logger.error(`Failed to cancel order ${order.order_id}:`, error);
         }
       }
-    });
 
-    return Math.min(score, 100);
+      const portfolio = await this.getPortfolioSummary();
+      this.logger.warn(
+        `Emergency stop complete. Portfolio: ${portfolio.positionCount} positions, $${(portfolio.totalExposure / 100).toFixed(2)} exposure`
+      );
+    } catch (error) {
+      this.logger.error('Error during emergency stop:', error);
+      throw error;
+    }
   }
 
   /**
-   * Get execution recommendation
+   * Health check - verify portfolio is within risk limits
    */
-  private getRecommendation(checks: RiskCheck[]): string {
-    const criticalFailures = checks.filter(
-      c => !c.passed && c.severity === 'critical'
-    );
-    const warnings = checks.filter(
-      c => !c.passed && c.severity === 'warning'
-    );
+  async healthCheck(): Promise<{
+    healthy: boolean;
+    issues: string[];
+    warnings: string[];
+  }> {
+    const issues: string[] = [];
+    const warnings: string[] = [];
 
-    if (criticalFailures.length > 0) {
-      return `DO NOT EXECUTE: ${criticalFailures.length} critical issue(s)`;
+    try {
+      const portfolio = await this.getPortfolioSummary();
+
+      // Check total exposure
+      const exposureDollars = portfolio.totalExposure / 100;
+      if (exposureDollars > this.config.maxTotalExposure) {
+        issues.push(
+          `Total exposure $${exposureDollars.toFixed(2)} exceeds limit $${this.config.maxTotalExposure}`
+        );
+      } else if (exposureDollars > this.config.maxTotalExposure * 0.9) {
+        warnings.push(
+          `Total exposure $${exposureDollars.toFixed(2)} near limit $${this.config.maxTotalExposure}`
+        );
+      }
+
+      // Check balance
+      const balanceDollars = portfolio.totalBalance / 100;
+      if (balanceDollars < 100) {
+        // Less than $100
+        issues.push(`Low balance: $${balanceDollars.toFixed(2)}`);
+      }
+
+      // Check position count
+      if (portfolio.positionCount > 20) {
+        warnings.push(`High position count: ${portfolio.positionCount}`);
+      }
+
+      // Check for large unrealized losses
+      if (portfolio.unrealizedPnl < -5000) {
+        // -$50
+        issues.push(
+          `Large unrealized loss: $${(portfolio.unrealizedPnl / 100).toFixed(2)}`
+        );
+      }
+    } catch (error: any) {
+      issues.push(`Health check failed: ${error.message}`);
     }
-
-    if (warnings.length > 2) {
-      return `CAUTION: ${warnings.length} warnings - proceed with extreme caution`;
-    }
-
-    if (warnings.length > 0) {
-      return `PROCEED WITH CAUTION: ${warnings.length} warning(s)`;
-    }
-
-    return 'SAFE TO EXECUTE: All checks passed';
-  }
-
-  /**
-   * Monitor ongoing position health
-   */
-  monitorPositionHealth(
-    supplyMarket: KashiMarketData,
-    borrowMarket: KashiMarketData,
-    positionSize: BigNumber
-  ): PositionHealth {
-    const currentSpread = supplyMarket.supplyAPY.minus(
-      borrowMarket.borrowAPY
-    );
-
-    const healthFactor = this.calculateHealthFactor(
-      supplyMarket,
-      borrowMarket,
-      positionSize
-    );
-
-    const status = this.determineHealthStatus(healthFactor, currentSpread);
 
     return {
-      healthFactor,
-      currentSpread,
-      supplyUtilization: supplyMarket.utilization,
-      borrowUtilization: borrowMarket.utilization,
-      status,
-      shouldClose: status === 'critical',
-      recommendation: this.getHealthRecommendation(status, healthFactor)
+      healthy: issues.length === 0,
+      issues,
+      warnings,
     };
   }
-
-  /**
-   * Calculate health factor for position
-   */
-  private calculateHealthFactor(
-    supplyMarket: KashiMarketData,
-    borrowMarket: KashiMarketData,
-    positionSize: BigNumber
-  ): BigNumber {
-    // Simplified health factor calculation
-    // Real implementation would account for collateralization ratios
-    const supplyValue = positionSize;
-    const borrowValue = positionSize;
-
-    return supplyValue.div(borrowValue);
-  }
-
-  /**
-   * Determine position health status
-   */
-  private determineHealthStatus(
-    healthFactor: BigNumber,
-    currentSpread: BigNumber
-  ): HealthStatus {
-    if (healthFactor.lt(1.1) || currentSpread.lt(-0.01)) {
-      return 'critical';
-    }
-
-    if (healthFactor.lt(1.3) || currentSpread.lt(0)) {
-      return 'warning';
-    }
-
-    if (healthFactor.lt(1.5) || currentSpread.lt(0.005)) {
-      return 'caution';
-    }
-
-    return 'healthy';
-  }
-
-  /**
-   * Get health-based recommendation
-   */
-  private getHealthRecommendation(
-    status: HealthStatus,
-    healthFactor: BigNumber
-  ): string {
-    switch (status) {
-      case 'critical':
-        return `CLOSE POSITION IMMEDIATELY: Health factor ${healthFactor.toFixed(
-          2
-        )}`;
-      case 'warning':
-        return `CLOSE POSITION SOON: Health factor ${healthFactor.toFixed(2)}`;
-      case 'caution':
-        return `MONITOR CLOSELY: Health factor ${healthFactor.toFixed(2)}`;
-      default:
-        return `HEALTHY: Health factor ${healthFactor.toFixed(2)}`;
-    }
-  }
 }
-
-// Types
-export interface RiskAssessment {
-  passed: boolean;
-  canProceed: boolean;
-  riskScore: number;
-  checks: RiskCheck[];
-  warnings: RiskCheck[];
-  criticalIssues: RiskCheck[];
-  recommendation: string;
-}
-
-export interface RiskCheck {
-  name: string;
-  passed: boolean;
-  severity: 'info' | 'warning' | 'critical';
-  message: string;
-  value: number;
-}
-
-export interface PositionHealth {
-  healthFactor: BigNumber;
-  currentSpread: BigNumber;
-  supplyUtilization: BigNumber;
-  borrowUtilization: BigNumber;
-  status: HealthStatus;
-  shouldClose: boolean;
-  recommendation: string;
-}
-
-export type HealthStatus = 'healthy' | 'caution' | 'warning' | 'critical';

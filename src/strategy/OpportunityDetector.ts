@@ -1,304 +1,440 @@
-import BigNumber from 'bignumber.js';
-import { KashiMarketData, ArbitrageOpportunity, BotConfig } from '../contracts/types';
-import { ArbitrageMath } from '../math/ArbitrageMath';
-import { v4 as uuidv4 } from 'uuid';
+import { KalshiMarket, TradingOpportunity, KalshiConfig } from '../types/KalshiTypes';
+import { MarketAnalyzer } from '../analysis/MarketAnalyzer';
+import { BettingMath } from '../math/BettingMath';
+import { Logger } from '../utils/Logger';
 
 /**
- * Detects arbitrage opportunities across Kashi markets using mathematical analysis
- * NO HOPE, ONLY MATH
+ * Detects trading opportunities in Kalshi markets
+ * Finds mispriced contracts and calculates optimal position sizes
  */
 export class OpportunityDetector {
-  private config: BotConfig;
-  private readonly SECONDS_PER_DAY = 86400;
-  private readonly AVERAGE_HOLD_TIME_DAYS = 1; // Assume 1 day hold time
-  private readonly ESTIMATED_GAS_UNITS = new BigNumber(300000); // ~300k gas for complex arb
+  private analyzer: MarketAnalyzer;
+  private logger = Logger.getInstance();
+  private config: KalshiConfig;
 
-  constructor(config: BotConfig) {
+  constructor(config: KalshiConfig) {
     this.config = config;
+    this.analyzer = new MarketAnalyzer();
   }
 
   /**
-   * Scan all markets and find arbitrage opportunities
-   * Strategy: Find rate differentials where we can:
-   * 1. Supply asset to Market A (earn supply APY)
-   * 2. Borrow same asset from Market B (pay borrow APY)
-   * 3. Profit = Supply APY - Borrow APY (if positive)
+   * Scan markets and find trading opportunities
    */
-  async detectOpportunities(
-    markets: KashiMarketData[],
-    ethPriceUSD: number = 2000
-  ): Promise<ArbitrageOpportunity[]> {
-    const opportunities: ArbitrageOpportunity[] = [];
+  async findOpportunities(markets: KalshiMarket[]): Promise<TradingOpportunity[]> {
+    this.logger.info(`Scanning ${markets.length} markets for opportunities...`);
 
-    // Compare each market pair
-    for (let i = 0; i < markets.length; i++) {
-      for (let j = i + 1; j < markets.length; j++) {
-        const marketA = markets[i];
-        const marketB = markets[j];
+    const opportunities: TradingOpportunity[] = [];
 
-        // Only compare markets with the same asset
-        if (marketA.asset !== marketB.asset) {
-          continue;
-        }
+    for (const market of markets) {
+      // Skip closed or settled markets
+      if (market.status !== 'open') {
+        continue;
+      }
 
-        // Check both directions
-        const oppAtoB = await this.analyzeArbitrage(
-          marketA,
-          marketB,
-          'A_TO_B',
-          ethPriceUSD
-        );
-        if (oppAtoB) {
-          opportunities.push(oppAtoB);
-        }
+      // Skip markets with very low liquidity
+      const liquidity = this.analyzer.analyzeLiquidity(market, 1);
+      if (!liquidity.sufficient) {
+        this.logger.debug(`Skipping ${market.ticker} - insufficient liquidity`);
+        continue;
+      }
 
-        const oppBtoA = await this.analyzeArbitrage(
-          marketB,
-          marketA,
-          'B_TO_A',
-          ethPriceUSD
-        );
-        if (oppBtoA) {
-          opportunities.push(oppBtoA);
-        }
+      // Calculate fair value
+      const { fairProbability, confidence, models } =
+        await this.analyzer.calculateFairValue(market);
+
+      // Check both YES and NO sides for opportunities
+      const yesOpportunity = this.evaluateSide(
+        market,
+        'yes',
+        fairProbability,
+        confidence,
+        models
+      );
+
+      if (yesOpportunity) {
+        opportunities.push(yesOpportunity);
+      }
+
+      const noOpportunity = this.evaluateSide(
+        market,
+        'no',
+        1 - fairProbability,
+        confidence,
+        models
+      );
+
+      if (noOpportunity) {
+        opportunities.push(noOpportunity);
       }
     }
 
-    // Sort by profit percentage (best first)
-    return opportunities.sort((a, b) =>
-      b.profitPercentage.minus(a.profitPercentage).toNumber()
-    );
+    // Sort by expected value (best first)
+    opportunities.sort((a, b) => b.expectedValue - a.expectedValue);
+
+    this.logger.info(`Found ${opportunities.length} opportunities`);
+
+    return opportunities;
   }
 
   /**
-   * Analyze a specific arbitrage direction
-   * supplyMarket: Where we supply (earn interest)
-   * borrowMarket: Where we borrow (pay interest)
+   * Evaluate one side of a market (YES or NO)
    */
-  private async analyzeArbitrage(
-    supplyMarket: KashiMarketData,
-    borrowMarket: KashiMarketData,
-    direction: 'A_TO_B' | 'B_TO_A',
-    ethPriceUSD: number
-  ): Promise<ArbitrageOpportunity | null> {
-    // Calculate the interest rate spread
-    const spreadBps = supplyMarket.supplyAPY
-      .minus(borrowMarket.borrowAPY)
-      .times(10000);
+  private evaluateSide(
+    market: KalshiMarket,
+    side: 'yes' | 'no',
+    fairProbability: number,
+    confidence: number,
+    models: { name: string; probability: number; weight: number }[]
+  ): TradingOpportunity | null {
+    // Get current prices
+    const askPrice = side === 'yes' ? market.yes_ask : market.no_ask;
+    const bidPrice = side === 'yes' ? market.yes_bid : market.no_bid;
 
-    // Must have positive spread to be profitable
-    const minSpreadBps = this.config.minProfitPercentage * 100;
-    if (spreadBps.lt(minSpreadBps)) {
+    // Evaluate buying opportunity
+    const buyOpp = this.evaluateBuy(
+      market,
+      side,
+      askPrice,
+      fairProbability,
+      confidence,
+      models
+    );
+
+    if (buyOpp) {
+      return buyOpp;
+    }
+
+    // Evaluate selling opportunity (if we would have a position)
+    const sellOpp = this.evaluateSell(
+      market,
+      side,
+      bidPrice,
+      fairProbability,
+      confidence,
+      models
+    );
+
+    return sellOpp;
+  }
+
+  /**
+   * Evaluate buying opportunity
+   */
+  private evaluateBuy(
+    market: KalshiMarket,
+    side: 'yes' | 'no',
+    askPrice: number,
+    fairProbability: number,
+    confidence: number,
+    models: { name: string; probability: number; weight: number }[]
+  ): TradingOpportunity | null {
+    // Calculate edge
+    const edge = BettingMath.calculateEdge(fairProbability, askPrice);
+
+    // Must meet minimum edge requirement
+    if (edge < this.config.minEdge) {
       return null;
     }
 
-    // Calculate maximum position size based on liquidity
-    const maxLiquidity = BigNumber.min(
-      supplyMarket.availableLiquidity,
-      borrowMarket.availableLiquidity
+    // Calculate expected value
+    const expectedValue = BettingMath.calculateExpectedValue(
+      fairProbability,
+      askPrice
     );
 
-    const maxPositionETH = new BigNumber(this.config.maxPositionSizeETH).times(
-      new BigNumber(10).pow(18)
+    // Validate the bet
+    const validation = BettingMath.isValidBet(
+      fairProbability,
+      askPrice,
+      this.config.minEdge,
+      0.05 // Minimum 5% EV
     );
 
-    const maxAmount = BigNumber.min(maxLiquidity, maxPositionETH);
+    if (!validation.valid) {
+      return null;
+    }
 
-    // Calculate optimal position size (don't impact market too much)
-    const optimalAmount = ArbitrageMath.calculateOptimalPositionSize(
-      maxLiquidity,
-      maxPositionETH,
-      new BigNumber(0.03) // Max 3% utilization impact
+    // Calculate Kelly fraction
+    const kellyFraction = BettingMath.kellyFraction(
+      fairProbability,
+      askPrice
     );
 
-    // Estimate costs
-    const estimatedGasCost = await this.estimateGasCost(ethPriceUSD);
-    const slippageBps = new BigNumber(30); // 0.3% slippage estimate
-    const estimatedSlippage = optimalAmount.times(slippageBps).div(10000);
+    // Apply fractional Kelly for safety
+    const adjustedKelly = kellyFraction * this.config.kellyFraction;
 
-    // Calculate profitability
-    const holdTimeSeconds = new BigNumber(
-      this.SECONDS_PER_DAY * this.AVERAGE_HOLD_TIME_DAYS
+    // Calculate position size
+    // Note: maxPositionSize is in dollars, askPrice is in cents
+    const maxContracts = Math.floor(
+      (this.config.maxPositionSize * 100) / askPrice
     );
 
-    const profitCalc = ArbitrageMath.calculateArbitrageProfit({
-      borrowRate: supplyMarket.supplyAPY,
-      supplyRate: borrowMarket.borrowAPY,
-      amount: optimalAmount,
-      timeHeldSeconds: holdTimeSeconds,
-      gasCostUSD: estimatedGasCost,
-      slippageBps
-    });
-
-    // Calculate utilization impact
-    const supplyImpact = ArbitrageMath.calculateUtilizationImpact(
-      supplyMarket.totalBorrow,
-      supplyMarket.totalAsset,
-      optimalAmount,
-      false // We're supplying
+    const recommendedContracts = Math.min(
+      maxContracts,
+      Math.floor((this.config.maxTotalExposure * 100 * adjustedKelly) / askPrice)
     );
 
-    const borrowImpact = ArbitrageMath.calculateUtilizationImpact(
-      borrowMarket.totalBorrow,
-      borrowMarket.totalAsset,
-      optimalAmount,
-      true // We're borrowing
-    );
+    // Must be at least 1 contract
+    if (recommendedContracts < 1) {
+      return null;
+    }
 
-    const totalUtilizationImpact = supplyImpact.utilizationChange
-      .abs()
-      .plus(borrowImpact.utilizationChange.abs());
-
-    // Calculate liquidation risk (simplified)
-    const liquidationRisk = this.calculateLiquidationRisk(
-      borrowMarket.utilization,
-      borrowImpact.newUtilization
-    );
-
-    // Check if opportunity is worth executing
-    const worthExecuting = this.isWorthExecuting(
-      profitCalc.netProfit,
-      profitCalc.profitPercentage,
-      liquidationRisk,
-      totalUtilizationImpact
-    );
-
-    const reason = this.getExecutionReason(
-      worthExecuting,
-      profitCalc.netProfit,
-      profitCalc.profitPercentage,
-      liquidationRisk
+    // Build reasoning
+    const reasoning = this.buildReasoning(
+      'buy',
+      side,
+      fairProbability,
+      askPrice,
+      edge,
+      expectedValue,
+      models
     );
 
     return {
-      id: uuidv4(),
-      timestamp: Date.now(),
-      supplyMarket,
-      borrowMarket,
-      spreadBps,
-      spreadPercent: spreadBps.div(100),
-      direction,
-      optimalAmount,
-      maxAmount,
-      expectedGrossProfit: profitCalc.grossProfit,
-      expectedNetProfit: profitCalc.netProfit,
-      profitPercentage: profitCalc.profitPercentage,
-      estimatedGasCost,
-      estimatedSlippage,
-      utilizationImpact: totalUtilizationImpact,
-      liquidationRisk,
-      worthExecuting,
-      reason
+      ticker: market.ticker,
+      title: market.title,
+      side,
+      action: 'buy',
+      currentPrice: askPrice,
+      fairValue: BettingMath.probabilityToPrice(fairProbability),
+      edge,
+      expectedValue,
+      kellyFraction: adjustedKelly,
+      recommendedSize: recommendedContracts,
+      maxSize: maxContracts,
+      reasoning,
+      confidence,
+      category: market.category,
+      expirationTime: market.expiration_time,
     };
   }
 
   /**
-   * Estimate gas cost for the arbitrage transaction
+   * Evaluate selling opportunity
+   * Used to exit positions when market becomes overpriced
    */
-  private async estimateGasCost(ethPriceUSD: number): Promise<BigNumber> {
-    const gasPriceGwei = new BigNumber(this.config.gasPriceLimitGwei);
-    const gasPriceWei = gasPriceGwei.times(new BigNumber(10).pow(9));
-    const gasCostWei = gasPriceWei.times(this.ESTIMATED_GAS_UNITS);
-    const gasCostETH = gasCostWei.div(new BigNumber(10).pow(18));
-    return gasCostETH.times(ethPriceUSD);
+  private evaluateSell(
+    market: KalshiMarket,
+    side: 'yes' | 'no',
+    bidPrice: number,
+    fairProbability: number,
+    confidence: number,
+    models: { name: string; probability: number; weight: number }[]
+  ): TradingOpportunity | null {
+    // For selling, we want the market to OVERVALUE the contract
+    // This means market price > fair value
+    const edge = -BettingMath.calculateEdge(fairProbability, bidPrice);
+
+    // Must meet minimum edge requirement (market is overpriced enough)
+    if (edge < this.config.minEdge) {
+      return null;
+    }
+
+    // Build reasoning
+    const reasoning = this.buildReasoning(
+      'sell',
+      side,
+      fairProbability,
+      bidPrice,
+      edge,
+      0, // EV doesn't apply to exits
+      models
+    );
+
+    return {
+      ticker: market.ticker,
+      title: market.title,
+      side,
+      action: 'sell',
+      currentPrice: bidPrice,
+      fairValue: BettingMath.probabilityToPrice(fairProbability),
+      edge,
+      expectedValue: 0,
+      kellyFraction: 0,
+      recommendedSize: 0, // Will be determined by actual position
+      maxSize: 0,
+      reasoning,
+      confidence,
+      category: market.category,
+      expirationTime: market.expiration_time,
+    };
   }
 
   /**
-   * Calculate liquidation risk based on utilization
-   * Higher utilization = higher risk
+   * Build human-readable reasoning for the opportunity
    */
-  private calculateLiquidationRisk(
-    currentUtilization: BigNumber,
-    newUtilization: BigNumber
-  ): BigNumber {
-    // Risk increases exponentially as utilization approaches 100%
-    const utilizationPct = newUtilization.times(100);
-
-    if (utilizationPct.lt(70)) {
-      return new BigNumber(0.01); // 1% risk
-    } else if (utilizationPct.lt(85)) {
-      return new BigNumber(0.05); // 5% risk
-    } else if (utilizationPct.lt(95)) {
-      return new BigNumber(0.15); // 15% risk
-    } else {
-      return new BigNumber(0.50); // 50% risk - very dangerous
-    }
-  }
-
-  /**
-   * Determine if opportunity is worth executing
-   */
-  private isWorthExecuting(
-    netProfit: BigNumber,
-    profitPercentage: BigNumber,
-    liquidationRisk: BigNumber,
-    utilizationImpact: BigNumber
-  ): boolean {
-    // Must be profitable
-    if (netProfit.lte(0)) {
-      return false;
-    }
-
-    // Must meet minimum profit thresholds
-    if (netProfit.lt(this.config.minProfitUSD)) {
-      return false;
-    }
-
-    if (profitPercentage.lt(this.config.minProfitPercentage)) {
-      return false;
-    }
-
-    // Risk checks
-    if (liquidationRisk.gt(0.2)) {
-      // Max 20% liquidation risk
-      return false;
-    }
-
-    if (utilizationImpact.gt(0.1)) {
-      // Max 10% total utilization impact
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Get human-readable reason for execution decision
-   */
-  private getExecutionReason(
-    worthExecuting: boolean,
-    netProfit: BigNumber,
-    profitPercentage: BigNumber,
-    liquidationRisk: BigNumber
+  private buildReasoning(
+    action: 'buy' | 'sell',
+    side: 'yes' | 'no',
+    fairProbability: number,
+    price: number,
+    edge: number,
+    expectedValue: number,
+    models: { name: string; probability: number; weight: number }[]
   ): string {
-    if (!worthExecuting) {
-      if (netProfit.lte(0)) {
-        return 'Not profitable after costs';
-      }
-      if (netProfit.lt(this.config.minProfitUSD)) {
-        return `Net profit ${netProfit.toFixed(2)} < minimum ${
-          this.config.minProfitUSD
-        }`;
-      }
-      if (profitPercentage.lt(this.config.minProfitPercentage)) {
-        return `Profit % ${profitPercentage.toFixed(
-          2
-        )}% < minimum ${this.config.minProfitPercentage}%`;
-      }
-      if (liquidationRisk.gt(0.2)) {
-        return `Liquidation risk ${liquidationRisk
-          .times(100)
-          .toFixed(1)}% too high`;
-      }
-      return 'Failed risk checks';
+    const fairPercent = (fairProbability * 100).toFixed(1);
+    const pricePercent = price.toFixed(0);
+    const edgePercent = (edge * 100).toFixed(1);
+    const evPercent = (expectedValue * 100).toFixed(1);
+
+    let reasoning = `${action.toUpperCase()} ${side.toUpperCase()}: `;
+
+    if (action === 'buy') {
+      reasoning += `Fair value ${fairPercent}% vs market ${pricePercent}¢. `;
+      reasoning += `Edge: ${edgePercent}%, EV: ${evPercent}%. `;
+    } else {
+      reasoning += `Market overpriced at ${pricePercent}¢ vs fair ${fairPercent}%. `;
+      reasoning += `Edge on exit: ${edgePercent}%. `;
     }
 
-    return `Profitable: $${netProfit.toFixed(2)} (${profitPercentage.toFixed(
-      2
-    )}%)`;
+    // Add top contributing models
+    const topModels = models
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, 2);
+
+    reasoning += 'Models: ';
+    reasoning += topModels
+      .map((m) => `${m.name} (${(m.probability * 100).toFixed(0)}%)`)
+      .join(', ');
+
+    return reasoning;
+  }
+
+  /**
+   * Filter opportunities by category
+   */
+  filterByCategory(
+    opportunities: TradingOpportunity[],
+    categories: string[]
+  ): TradingOpportunity[] {
+    if (categories.length === 0) {
+      return opportunities;
+    }
+
+    return opportunities.filter((opp) =>
+      categories.some((cat) =>
+        opp.category.toLowerCase().includes(cat.toLowerCase())
+      )
+    );
+  }
+
+  /**
+   * Detect arbitrage opportunities
+   * Rare but risk-free profit when YES + NO < 100
+   */
+  detectArbitrage(market: KalshiMarket): {
+    hasArbitrage: boolean;
+    profit: number;
+    yesContracts: number;
+    noContracts: number;
+  } {
+    const result = BettingMath.detectArbitrage(
+      market.yes_ask,
+      market.no_ask
+    );
+
+    if (result.hasArbitrage) {
+      this.logger.info(`ARBITRAGE FOUND in ${market.ticker}! Profit: ${result.profit}¢ per contract pair`);
+
+      // Calculate how many contracts we can buy
+      const maxSpend = this.config.maxPositionSize * 100; // Convert to cents
+      const costPerPair = market.yes_ask + market.no_ask;
+      const maxPairs = Math.floor(maxSpend / costPerPair);
+
+      return {
+        hasArbitrage: true,
+        profit: result.profit,
+        yesContracts: maxPairs,
+        noContracts: maxPairs,
+      };
+    }
+
+    return {
+      hasArbitrage: false,
+      profit: 0,
+      yesContracts: 0,
+      noContracts: 0,
+    };
+  }
+
+  /**
+   * Analyze correlation between markets
+   * Helps avoid overexposure to correlated events
+   */
+  estimateCorrelation(market1: KalshiMarket, market2: KalshiMarket): number {
+    // Simple heuristic-based correlation estimation
+    // In a real implementation, use historical price movements
+
+    // Same event = highly correlated
+    if (market1.event_ticker === market2.event_ticker) {
+      return 0.8;
+    }
+
+    // Same category = moderately correlated
+    if (market1.category === market2.category) {
+      // Check if they share keywords
+      const title1Words = market1.title.toLowerCase().split(' ');
+      const title2Words = market2.title.toLowerCase().split(' ');
+
+      const commonWords = title1Words.filter((word) =>
+        title2Words.includes(word)
+      );
+
+      if (commonWords.length > 2) {
+        return 0.5;
+      }
+
+      return 0.3;
+    }
+
+    // Different categories = low correlation
+    return 0.1;
+  }
+
+  /**
+   * Get summary statistics for opportunities
+   */
+  getOpportunitySummary(opportunities: TradingOpportunity[]): {
+    count: number;
+    totalExpectedValue: number;
+    averageEdge: number;
+    averageConfidence: number;
+    byCategory: { [category: string]: number };
+  } {
+    const count = opportunities.length;
+
+    if (count === 0) {
+      return {
+        count: 0,
+        totalExpectedValue: 0,
+        averageEdge: 0,
+        averageConfidence: 0,
+        byCategory: {},
+      };
+    }
+
+    const totalExpectedValue = opportunities.reduce(
+      (sum, opp) => sum + opp.expectedValue,
+      0
+    );
+
+    const averageEdge =
+      opportunities.reduce((sum, opp) => sum + opp.edge, 0) / count;
+
+    const averageConfidence =
+      opportunities.reduce((sum, opp) => sum + opp.confidence, 0) / count;
+
+    const byCategory: { [category: string]: number } = {};
+    opportunities.forEach((opp) => {
+      byCategory[opp.category] = (byCategory[opp.category] || 0) + 1;
+    });
+
+    return {
+      count,
+      totalExpectedValue,
+      averageEdge,
+      averageConfidence,
+      byCategory,
+    };
   }
 }
-
-// Note: We need to install uuid
-// Add to package.json dependencies: "uuid": "^9.0.0"
-// Add to devDependencies: "@types/uuid": "^9.0.0"

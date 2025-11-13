@@ -1,14 +1,13 @@
 import winston from 'winston';
-import { ArbitrageOpportunity, TradeExecutionResult } from '../contracts/types';
-import { RiskAssessment } from '../risk/RiskManager';
 
 /**
- * Structured logging for the arbitrage bot
+ * Singleton logger for the Kalshi trading bot
  */
 export class Logger {
+  private static instance: Logger;
   private logger: winston.Logger;
 
-  constructor(logLevel: string = 'info') {
+  private constructor(logLevel: string = 'info') {
     this.logger = winston.createLogger({
       level: logLevel,
       format: winston.format.combine(
@@ -22,8 +21,10 @@ export class Logger {
             winston.format.colorize(),
             winston.format.printf(({ timestamp, level, message, ...meta }) => {
               let msg = `${timestamp} [${level}]: ${message}`;
-              if (Object.keys(meta).length > 0) {
-                msg += ` ${JSON.stringify(meta, null, 2)}`;
+              if (Object.keys(meta).length > 0 && Object.keys(meta).filter(k => k !== 'timestamp').length > 0) {
+                const cleanMeta = { ...meta };
+                delete cleanMeta.timestamp;
+                msg += ` ${JSON.stringify(cleanMeta)}`;
               }
               return msg;
             })
@@ -35,164 +36,38 @@ export class Logger {
         }),
         new winston.transports.File({
           filename: 'logs/combined.log'
-        }),
-        new winston.transports.File({
-          filename: 'logs/trades.log',
-          format: winston.format.combine(
-            winston.format.timestamp(),
-            winston.format.json()
-          )
         })
       ]
     });
   }
 
-  /**
-   * Log bot startup
-   */
-  logStartup(config: any): void {
-    this.logger.info('Kashi Arbitrage Bot Starting', {
-      dryRun: config.dryRun,
-      minProfitUSD: config.minProfitUSD,
-      minProfitPercentage: config.minProfitPercentage,
-      maxPositionSize: config.maxPositionSizeETH,
-      markets: config.kashiMarkets
-    });
-  }
-
-  /**
-   * Log opportunity detection
-   */
-  logOpportunityDetected(opportunity: ArbitrageOpportunity): void {
-    this.logger.info('Arbitrage Opportunity Detected', {
-      id: opportunity.id,
-      supplyMarket: `${opportunity.supplyMarket.assetSymbol}-${opportunity.supplyMarket.collateralSymbol}`,
-      borrowMarket: `${opportunity.borrowMarket.assetSymbol}-${opportunity.borrowMarket.collateralSymbol}`,
-      spread: opportunity.spreadPercent.toFixed(4),
-      expectedProfit: opportunity.expectedNetProfit.toFixed(2),
-      profitPercentage: opportunity.profitPercentage.toFixed(2),
-      worthExecuting: opportunity.worthExecuting,
-      reason: opportunity.reason
-    });
-  }
-
-  /**
-   * Log risk assessment
-   */
-  logRiskAssessment(
-    opportunityId: string,
-    assessment: RiskAssessment
-  ): void {
-    const level = assessment.canProceed ? 'info' : 'warn';
-
-    this.logger.log(level, 'Risk Assessment Complete', {
-      opportunityId,
-      passed: assessment.passed,
-      canProceed: assessment.canProceed,
-      riskScore: assessment.riskScore,
-      recommendation: assessment.recommendation,
-      warnings: assessment.warnings.length,
-      criticalIssues: assessment.criticalIssues.length,
-      checks: assessment.checks.map(c => ({
-        name: c.name,
-        passed: c.passed,
-        severity: c.severity,
-        message: c.message
-      }))
-    });
-  }
-
-  /**
-   * Log trade execution
-   */
-  logTradeExecution(result: TradeExecutionResult): void {
-    const level = result.success ? 'info' : 'error';
-
-    this.logger.log(level, 'Trade Execution Result', {
-      success: result.success,
-      opportunityId: result.opportunity.id,
-      transactionHash: result.transactionHash,
-      actualProfit: result.actualProfit?.toFixed(2),
-      gasUsed: result.gasUsed?.toFixed(0),
-      error: result.error,
-      timestamp: result.timestamp
-    });
-
-    // Also log to trades file
-    if (result.success) {
-      this.logTrade(result);
+  static getInstance(): Logger {
+    if (!Logger.instance) {
+      Logger.instance = new Logger();
     }
+    return Logger.instance;
   }
 
-  /**
-   * Log successful trade to dedicated file
-   */
-  private logTrade(result: TradeExecutionResult): void {
-    this.logger.info('TRADE_EXECUTED', {
-      txHash: result.transactionHash,
-      profit: result.actualProfit?.toFixed(2),
-      opportunity: {
-        id: result.opportunity.id,
-        spread: result.opportunity.spreadPercent.toFixed(4),
-        amount: result.opportunity.optimalAmount.toFixed(0)
-      }
-    });
-  }
-
-  /**
-   * Log market scan
-   */
-  logMarketScan(marketsCount: number, opportunitiesFound: number): void {
-    this.logger.debug('Market Scan Complete', {
-      marketsScanned: marketsCount,
-      opportunitiesFound
-    });
-  }
-
-  /**
-   * Log position monitoring
-   */
-  logPositionMonitoring(
-    positionId: string,
-    health: string,
-    recommendation: string
-  ): void {
-    this.logger.info('Position Health Check', {
-      positionId,
-      health,
-      recommendation
-    });
-  }
-
-  /**
-   * Log errors
-   */
-  logError(context: string, error: any): void {
-    this.logger.error(`Error in ${context}`, {
-      message: error.message,
-      stack: error.stack,
-      ...error
-    });
-  }
-
-  /**
-   * Log warnings
-   */
-  logWarning(message: string, meta?: any): void {
-    this.logger.warn(message, meta);
-  }
-
-  /**
-   * Log info
-   */
-  logInfo(message: string, meta?: any): void {
+  info(message: string, meta?: any): void {
     this.logger.info(message, meta);
   }
 
-  /**
-   * Log debug
-   */
-  logDebug(message: string, meta?: any): void {
+  warn(message: string, meta?: any): void {
+    this.logger.warn(message, meta);
+  }
+
+  error(message: string, error?: any): void {
+    if (error instanceof Error) {
+      this.logger.error(message, {
+        message: error.message,
+        stack: error.stack
+      });
+    } else {
+      this.logger.error(message, error);
+    }
+  }
+
+  debug(message: string, meta?: any): void {
     this.logger.debug(message, meta);
   }
 

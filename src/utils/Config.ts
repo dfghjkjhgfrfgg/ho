@@ -1,68 +1,71 @@
 import { config as dotenvConfig } from 'dotenv';
-import { BotConfig } from '../contracts/types';
+import { KalshiConfig } from '../types/KalshiTypes';
 
 /**
- * Load and validate configuration
+ * Load and validate Kalshi bot configuration
  */
 export class Config {
-  static load(): BotConfig {
+  static load(): KalshiConfig {
     // Load environment variables
     dotenvConfig();
 
-    const config: BotConfig = {
-      // RPC
-      rpcUrl: process.env.RPC_URL || '',
-      chainId: parseInt(process.env.CHAIN_ID || '1'),
-
-      // Wallet
-      privateKey: process.env.PRIVATE_KEY || '',
+    const config: KalshiConfig = {
+      // Kalshi credentials
+      apiKeyId: process.env.KALSHI_API_KEY_ID || '',
+      privateKeyPath: process.env.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem',
+      baseUrl: process.env.KALSHI_API_URL || 'https://api.elections.kalshi.com/trade-api/v2',
 
       // Trading parameters
-      minProfitUSD: parseFloat(process.env.MIN_PROFIT_USD || '50'),
-      minProfitPercentage: parseFloat(process.env.MIN_PROFIT_PERCENTAGE || '0.5'),
-      maxPositionSizeETH: parseFloat(process.env.MAX_POSITION_SIZE_ETH || '10'),
-      gasPriceLimitGwei: parseFloat(process.env.GAS_PRICE_LIMIT_GWEI || '100'),
-
-      // Markets
-      kashiMarkets: (process.env.KASHI_MARKETS || '').split(',').filter(Boolean),
+      minEdge: parseFloat(process.env.MIN_EDGE || '0.05'), // 5% edge minimum
+      maxPositionSize: parseFloat(process.env.MAX_POSITION_SIZE || '100'), // $100 per position
+      maxTotalExposure: parseFloat(process.env.MAX_TOTAL_EXPOSURE || '500'), // $500 total
+      kellyFraction: parseFloat(process.env.KELLY_FRACTION || '0.25'), // Quarter Kelly
 
       // Execution
       dryRun: process.env.DRY_RUN === 'true',
-      executionIntervalMs: parseInt(process.env.EXECUTION_INTERVAL_MS || '5000'),
+      scanIntervalMs: parseInt(process.env.SCAN_INTERVAL_MS || '30000'), // 30 seconds
 
-      // Logging
-      logLevel: process.env.LOG_LEVEL || 'info'
+      // Categories to trade
+      categories: (process.env.CATEGORIES || 'sports,nfl,nba,mlb').split(',').filter(Boolean),
     };
 
     this.validate(config);
     return config;
   }
 
-  private static validate(config: BotConfig): void {
+  private static validate(config: KalshiConfig): void {
     const errors: string[] = [];
 
-    if (!config.rpcUrl) {
-      errors.push('RPC_URL is required');
+    if (!config.apiKeyId) {
+      errors.push('KALSHI_API_KEY_ID is required');
     }
 
-    if (!config.privateKey && !config.dryRun) {
-      errors.push('PRIVATE_KEY is required (unless DRY_RUN=true)');
+    if (!config.privateKeyPath) {
+      errors.push('KALSHI_PRIVATE_KEY_PATH is required');
     }
 
-    if (config.minProfitUSD <= 0) {
-      errors.push('MIN_PROFIT_USD must be positive');
+    if (!config.baseUrl) {
+      errors.push('KALSHI_API_URL is required');
     }
 
-    if (config.minProfitPercentage <= 0) {
-      errors.push('MIN_PROFIT_PERCENTAGE must be positive');
+    if (config.minEdge <= 0 || config.minEdge >= 1) {
+      errors.push('MIN_EDGE must be between 0 and 1');
     }
 
-    if (config.maxPositionSizeETH <= 0) {
-      errors.push('MAX_POSITION_SIZE_ETH must be positive');
+    if (config.maxPositionSize <= 0) {
+      errors.push('MAX_POSITION_SIZE must be positive');
     }
 
-    if (config.kashiMarkets.length === 0) {
-      errors.push('KASHI_MARKETS must contain at least one market');
+    if (config.maxTotalExposure <= 0) {
+      errors.push('MAX_TOTAL_EXPOSURE must be positive');
+    }
+
+    if (config.maxPositionSize > config.maxTotalExposure) {
+      errors.push('MAX_POSITION_SIZE cannot exceed MAX_TOTAL_EXPOSURE');
+    }
+
+    if (config.kellyFraction <= 0 || config.kellyFraction > 1) {
+      errors.push('KELLY_FRACTION must be between 0 and 1');
     }
 
     if (errors.length > 0) {
@@ -73,25 +76,14 @@ export class Config {
   }
 
   /**
-   * Get well-known Kashi pair addresses
-   * These are examples - replace with actual mainnet addresses
+   * Get demo/sandbox configuration
    */
-  static getKashiPairAddresses(): { [key: string]: string } {
+  static getDemoConfig(): Partial<KalshiConfig> {
     return {
-      'USDC-WETH': '0x...', // Add actual Kashi pair addresses
-      'DAI-WETH': '0x...',
-      'USDT-WETH': '0x...',
-      // Add more pairs as needed
+      baseUrl: 'https://demo.kalshi.com/trade-api/v2',
+      dryRun: true,
+      maxPositionSize: 10,
+      maxTotalExposure: 50,
     };
-  }
-
-  /**
-   * Resolve market names to addresses
-   */
-  static resolveMarketAddresses(marketNames: string[]): string[] {
-    const knownPairs = this.getKashiPairAddresses();
-    return marketNames
-      .map(name => knownPairs[name])
-      .filter(address => address && address !== '0x...');
   }
 }

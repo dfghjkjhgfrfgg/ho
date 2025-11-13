@@ -4,3 +4,8 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# Kalshi Credentials - NEVER COMMIT!
+.env
+kalshi_private_key.pem
+*.pem
