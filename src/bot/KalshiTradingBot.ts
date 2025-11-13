@@ -21,7 +21,7 @@ export class KalshiTradingBot {
 
   constructor(config: KalshiConfig) {
     this.config = config;
-    this.client = new KalshiClient(config.email, config.password, config.baseUrl);
+    this.client = new KalshiClient(config.apiKeyId, config.privateKeyPath, config.baseUrl);
     this.detector = new OpportunityDetector(config);
     this.executor = new TradeExecutor(this.client, config);
     this.riskManager = new RiskManager(this.client, config);

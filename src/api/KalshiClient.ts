@@ -1,4 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
 import {
   KalshiAuthResponse,
   KalshiMarket,
@@ -11,24 +13,30 @@ import {
 import { Logger } from '../utils/Logger';
 
 /**
- * Kalshi API Client
+ * Kalshi API Client with API Key Authentication
  * Handles authentication, rate limiting, and all API interactions
  */
 export class KalshiClient {
   private client: AxiosInstance;
-  private token: string | null = null;
-  private tokenExpiry: Date | null = null;
-  private email: string;
-  private password: string;
+  private apiKeyId: string;
+  private privateKey: string;
   private baseUrl: string;
   private logger = Logger.getInstance();
   private lastRequestTime = 0;
   private minRequestInterval = 100; // 100ms between requests for rate limiting
 
-  constructor(email: string, password: string, baseUrl: string) {
-    this.email = email;
-    this.password = password;
+  constructor(apiKeyId: string, privateKeyPath: string, baseUrl: string) {
+    this.apiKeyId = apiKeyId;
     this.baseUrl = baseUrl;
+
+    // Load private key from file
+    try {
+      this.privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+      this.logger.info('Private key loaded successfully');
+    } catch (error) {
+      this.logger.error('Failed to load private key:', error);
+      throw new Error(`Failed to load private key from ${privateKeyPath}`);
+    }
 
     this.client = axios.create({
       baseURL: baseUrl,
@@ -37,6 +45,22 @@ export class KalshiClient {
         'Content-Type': 'application/json',
       },
     });
+
+    // Add request interceptor for authentication
+    this.client.interceptors.request.use(
+      (config) => {
+        // Add authentication headers
+        const timestamp = Date.now().toString();
+        const signature = this.signRequest(timestamp, config.method?.toUpperCase() || 'GET', config.url || '');
+
+        config.headers['KALSHI-ACCESS-KEY'] = this.apiKeyId;
+        config.headers['KALSHI-ACCESS-SIGNATURE'] = signature;
+        config.headers['KALSHI-ACCESS-TIMESTAMP'] = timestamp;
+
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
 
     // Add response interceptor for error handling
     this.client.interceptors.response.use(
@@ -49,35 +73,34 @@ export class KalshiClient {
   }
 
   /**
-   * Authenticate with Kalshi and get access token
+   * Sign request using RSA private key
+   */
+  private signRequest(timestamp: string, method: string, path: string): string {
+    // Kalshi signature format: timestamp + method + path
+    const message = timestamp + method + path;
+
+    const sign = crypto.createSign('RSA-SHA256');
+    sign.update(message);
+    sign.end();
+
+    const signature = sign.sign(this.privateKey, 'base64');
+    return signature;
+  }
+
+  /**
+   * Test authentication (no separate login needed with API keys)
    */
   async authenticate(): Promise<void> {
     try {
-      this.logger.info('Authenticating with Kalshi...');
+      this.logger.info('Testing Kalshi API authentication...');
 
-      const response = await this.client.post<KalshiAuthResponse>('/login', {
-        email: this.email,
-        password: this.password,
-      });
-
-      this.token = response.data.token;
-
-      // Token expires in 30 minutes, refresh 5 minutes early
-      this.tokenExpiry = new Date(Date.now() + 25 * 60 * 1000);
+      // Test by fetching balance
+      await this.getBalance();
 
       this.logger.info('Authentication successful');
     } catch (error) {
       this.logger.error('Authentication failed:', error);
       throw new Error('Failed to authenticate with Kalshi');
-    }
-  }
-
-  /**
-   * Ensure we have a valid token, refresh if needed
-   */
-  private async ensureAuthenticated(): Promise<void> {
-    if (!this.token || !this.tokenExpiry || new Date() >= this.tokenExpiry) {
-      await this.authenticate();
     }
   }
 
@@ -105,17 +128,20 @@ export class KalshiClient {
     endpoint: string,
     data?: any
   ): Promise<T> {
-    await this.ensureAuthenticated();
     await this.rateLimit();
 
-    const config = {
+    const config: any = {
       method,
       url: endpoint,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-      },
-      ...(data && { data }),
     };
+
+    if (data) {
+      if (method === 'GET') {
+        config.params = data;
+      } else {
+        config.data = data;
+      }
+    }
 
     const response = await this.client.request<T>(config);
     return response.data;
@@ -131,38 +157,35 @@ export class KalshiClient {
     limit?: number;
     cursor?: string;
   }): Promise<{ markets: KalshiMarket[]; cursor?: string }> {
-    const queryParams = new URLSearchParams();
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
-          queryParams.append(key, value.toString());
-        }
-      });
-    }
-
-    const endpoint = `/markets?${queryParams.toString()}`;
-    return this.request<{ markets: KalshiMarket[]; cursor?: string }>('GET', endpoint);
+    return this.request<{ markets: KalshiMarket[]; cursor?: string }>('GET', '/markets', params);
   }
 
   /**
    * Get specific market by ticker
    */
   async getMarket(ticker: string): Promise<KalshiMarket> {
-    return this.request<KalshiMarket>('GET', `/markets/${ticker}`);
+    const response = await this.request<{ market: KalshiMarket }>('GET', `/markets/${ticker}`);
+    return response.market;
   }
 
   /**
    * Get event details
    */
   async getEvent(eventTicker: string): Promise<KalshiEvent> {
-    return this.request<KalshiEvent>('GET', `/events/${eventTicker}`);
+    const response = await this.request<{ event: KalshiEvent }>('GET', `/events/${eventTicker}`);
+    return response.event;
   }
 
   /**
    * Get orderbook for a market
    */
   async getOrderbook(ticker: string, depth = 5): Promise<KalshiOrderbook> {
-    return this.request<KalshiOrderbook>('GET', `/markets/${ticker}/orderbook?depth=${depth}`);
+    const response = await this.request<{ orderbook: KalshiOrderbook }>(
+      'GET',
+      `/markets/${ticker}/orderbook`,
+      { depth }
+    );
+    return response.orderbook;
   }
 
   /**
@@ -185,7 +208,8 @@ export class KalshiClient {
       price: params.yes_price || params.no_price,
     });
 
-    return this.request<KalshiOrder>('POST', '/orders', params);
+    const response = await this.request<{ order: KalshiOrder }>('POST', '/orders', params);
+    return response.order;
   }
 
   /**
@@ -205,17 +229,7 @@ export class KalshiClient {
     limit?: number;
     cursor?: string;
   }): Promise<{ orders: KalshiOrder[]; cursor?: string }> {
-    const queryParams = new URLSearchParams();
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
-          queryParams.append(key, value.toString());
-        }
-      });
-    }
-
-    const endpoint = `/orders?${queryParams.toString()}`;
-    return this.request<{ orders: KalshiOrder[]; cursor?: string }>('GET', endpoint);
+    return this.request<{ orders: KalshiOrder[]; cursor?: string }>('GET', '/orders', params);
   }
 
   /**
@@ -223,7 +237,7 @@ export class KalshiClient {
    */
   async getPositions(): Promise<KalshiPosition[]> {
     const response = await this.request<{ positions: KalshiPosition[] }>('GET', '/portfolio/positions');
-    return response.positions;
+    return response.positions || [];
   }
 
   /**
@@ -249,7 +263,7 @@ export class KalshiClient {
 
       // Filter by category (case-insensitive)
       const categoryMarkets = response.markets.filter(
-        m => m.category.toLowerCase().includes(category.toLowerCase())
+        m => m.category && m.category.toLowerCase().includes(category.toLowerCase())
       );
 
       allMarkets = allMarkets.concat(categoryMarkets);
@@ -280,9 +294,7 @@ export class KalshiClient {
       const data = error.response.data;
 
       if (status === 401) {
-        this.logger.error('Authentication error - token may be expired');
-        this.token = null;
-        this.tokenExpiry = null;
+        this.logger.error('Authentication error - check API key and signature');
       } else if (status === 429) {
         this.logger.warn('Rate limit exceeded - backing off');
       } else if (status >= 500) {
@@ -302,7 +314,6 @@ export class KalshiClient {
    */
   async healthCheck(): Promise<boolean> {
     try {
-      await this.ensureAuthenticated();
       await this.getBalance();
       return true;
     } catch (error) {

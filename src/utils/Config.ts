@@ -11,8 +11,8 @@ export class Config {
 
     const config: KalshiConfig = {
       // Kalshi credentials
-      email: process.env.KALSHI_EMAIL || '',
-      password: process.env.KALSHI_PASSWORD || '',
+      apiKeyId: process.env.KALSHI_API_KEY_ID || '',
+      privateKeyPath: process.env.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem',
       baseUrl: process.env.KALSHI_API_URL || 'https://api.elections.kalshi.com/trade-api/v2',
 
       // Trading parameters
@@ -36,12 +36,12 @@ export class Config {
   private static validate(config: KalshiConfig): void {
     const errors: string[] = [];
 
-    if (!config.email) {
-      errors.push('KALSHI_EMAIL is required');
+    if (!config.apiKeyId) {
+      errors.push('KALSHI_API_KEY_ID is required');
     }
 
-    if (!config.password && !config.dryRun) {
-      errors.push('KALSHI_PASSWORD is required (unless DRY_RUN=true)');
+    if (!config.privateKeyPath) {
+      errors.push('KALSHI_PRIVATE_KEY_PATH is required');
     }
 
     if (!config.baseUrl) {

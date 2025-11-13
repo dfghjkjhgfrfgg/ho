@@ -3,9 +3,8 @@
  */
 
 export interface KalshiConfig {
-  email: string;
-  password: string;
-  apiKey?: string;
+  apiKeyId: string;
+  privateKeyPath: string;
   baseUrl: string;
   dryRun: boolean;
   minEdge: number; // Minimum edge required (e.g., 0.05 = 5%)
